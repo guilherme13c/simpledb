@@ -27,6 +27,7 @@ pub fn main(init: std.process.Init) !void {
     var run_lock_manager = false;
     var run_secondary_index = false;
     var run_scan_resistance = false;
+    var run_mvcc = false;
     var run_all = true;
 
     for (args[1..]) |arg| {
@@ -60,6 +61,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "scan_resistance")) {
             run_scan_resistance = true;
             run_all = false;
+        } else if (std.mem.eql(u8, arg, "mvcc")) {
+            run_mvcc = true;
+            run_all = false;
         } else if (std.mem.eql(u8, arg, "all")) {
             run_all = true;
         }
@@ -77,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
     if (run_all or run_lock_manager) try benchmark_lock_manager(allocator, io);
     if (run_all or run_secondary_index) try benchmark_secondary_index(allocator, io);
     if (run_all or run_scan_resistance) try benchmark_scan_resistance(allocator, io);
+    if (run_all or run_mvcc) try benchmark_mvcc(allocator, io);
     
     std.debug.print("================================\nBenchmarks completed successfully.\n", .{});
 }
@@ -487,4 +492,127 @@ fn benchmark_scan_resistance(allocator: std.mem.Allocator, io: std.Io) !void {
     const elapsed = get_time_ms() - start_time;
     
     std.debug.print("Scan Resistance (1000 hot pages hit after 10k scan): {d} ms\n", .{elapsed});
+}
+
+fn benchmark_mvcc(allocator: std.mem.Allocator, io: std.Io) !void {
+    std.debug.print("\n[Benchmark: MVCC Concurrency & Version Churn]\n", .{});
+    const exec = @import("query/executor.zig");
+
+    const test_db = "data/bench_mvcc.db";
+    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    
+    var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    defer storage_mgr.deinit();
+
+    var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    defer buffer_mgr.deinit();
+
+    var next_page_counter: u32 = 1;
+
+    var catalog = try Catalog.init(allocator, &buffer_mgr, &next_page_counter);
+    defer catalog.deinit();
+    
+    const schema = [_]@import("query/ast.zig").ColumnDef{
+        .{ .name = "id", .data_type = .int },
+        .{ .name = "balance", .data_type = .int },
+    };
+    try catalog.create_table("accounts", &schema);
+    const table = catalog.get_table("accounts").?;
+    
+    const num_records = 20000; 
+    const num_updates = 10;
+
+    var start_time = get_time_ms();
+    
+    // 1. Initial Insertions
+    var txn_insert = @import("storage/wal/transaction.zig").TransactionContext{ .txn_id = 1 };
+    
+    const ast = @import("query/ast.zig");
+    for (0..num_records) |i| {
+        const t1 = try table.serialize_tuple(allocator, &[_]ast.Value{
+            .{ .int = @intCast(i) }, .{ .int = 100 }
+        });
+        defer allocator.free(t1);
+        _ = try table.insert(&txn_insert, @intCast(i), t1);
+    }
+    var elapsed = get_time_ms() - start_time;
+    std.debug.print("Initial Inserts (20k rows): {d} ms\n", .{elapsed});
+
+    // 2. Baseline Scan Time
+    start_time = get_time_ms();
+    var seq_base = exec.SeqScanExecutor{
+        .table = table,
+        .txn_ctx = &txn_insert,
+        .allocator = allocator,
+    };
+    try seq_base.open();
+    var count: usize = 0;
+    while (try seq_base.next()) |tuple| {
+        defer exec.free_tuple(allocator, tuple);
+        count += 1;
+    }
+    seq_base.close();
+    const baseline_elapsed = get_time_ms() - start_time;
+    std.debug.print("Baseline SeqScan (20k rows, no churn): {d} ms\n", .{baseline_elapsed});
+
+    // Snapshot for old reader
+    var txn_old_reader = @import("storage/wal/transaction.zig").TransactionContext{ .txn_id = 2 };
+    
+    // 3. Update Churn (simulate heavy OLTP updates)
+    start_time = get_time_ms();
+    for (0..num_updates) |u| {
+        var txn_update = @import("storage/wal/transaction.zig").TransactionContext{ .txn_id = @intCast(3 + u) };
+        for (0..num_records) |i| {
+            var upd = exec.UpdateExecutor{
+                .table = table,
+                .condition = .{ .eq = .{ .key = @intCast(i) } },
+                .column_name = "balance",
+                .new_value = .{ .int = @intCast(100 + u + 1) },
+                .txn_ctx = &txn_update,
+                .allocator = allocator,
+            };
+            try upd.open();
+            _ = try upd.next();
+            upd.close();
+        }
+    }
+    elapsed = get_time_ms() - start_time;
+    std.debug.print("Update Churn (20k rows * 10 updates = 200k updates): {d} ms\n", .{elapsed});
+
+    // 4. Stale Scan Time (Scanning past new versions)
+    start_time = get_time_ms();
+    var seq_old = exec.SeqScanExecutor{
+        .table = table,
+        .txn_ctx = &txn_old_reader,
+        .allocator = allocator,
+    };
+    try seq_old.open();
+    count = 0;
+    while (try seq_old.next()) |tuple| {
+        defer exec.free_tuple(allocator, tuple);
+        count += 1;
+    }
+    seq_old.close();
+    const stale_elapsed = get_time_ms() - start_time;
+    std.debug.print("Stale SeqScan (reading oldest versions): {d} ms ({d}x degradation)\n", .{stale_elapsed, stale_elapsed / @max(baseline_elapsed, 1)});
+
+    // 5. Fresh Scan Time (Scanning past old versions)
+    var txn_fresh = @import("storage/wal/transaction.zig").TransactionContext{ .txn_id = 1000 };
+    start_time = get_time_ms();
+    var seq_fresh = exec.SeqScanExecutor{
+        .table = table,
+        .txn_ctx = &txn_fresh,
+        .allocator = allocator,
+    };
+    try seq_fresh.open();
+    count = 0;
+    while (try seq_fresh.next()) |tuple| {
+        defer exec.free_tuple(allocator, tuple);
+        count += 1;
+    }
+    seq_fresh.close();
+    const fresh_elapsed = get_time_ms() - start_time;
+    std.debug.print("Fresh SeqScan (reading newest versions): {d} ms ({d}x degradation)\n", .{fresh_elapsed, fresh_elapsed / @max(baseline_elapsed, 1)});
+
+    std.debug.print("Space Amplification: Database grew to {d} pages.\n", .{next_page_counter});
 }

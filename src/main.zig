@@ -19,6 +19,7 @@ pub fn main(init: std.process.Init) !void {
     const io = threaded_io.io();
 
     var storage_mgr = try sm.StorageManager.init(allocator, io, "data/simple.db");
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     const dir = std.Io.Dir.cwd();

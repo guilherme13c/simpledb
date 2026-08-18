@@ -32,6 +32,7 @@ test "BTree insertion and scan" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -86,6 +87,7 @@ test "Catalog and Table end-to-end" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -124,6 +126,7 @@ test "Schema Serialization and Deserialization" {
     // Step 1: Create DB, initialize catalog, and create a table with a schema
     {
         var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
         defer storage_mgr.deinit();
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -146,6 +149,7 @@ test "Schema Serialization and Deserialization" {
     // Step 2: Restart the DB. The buffer pool will be flushed and re-read from disk.
     {
         var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
         defer storage_mgr.deinit();
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -184,6 +188,7 @@ test "LogManager and RecoveryManager physical logging" {
     // Step 1: Create a DB, write some logs, and crash
     {
         var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
         defer storage_mgr.deinit();
 
         const dir = std.Io.Dir.cwd();
@@ -211,6 +216,7 @@ test "LogManager and RecoveryManager physical logging" {
     // Step 2: Recover
     {
         var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
         defer storage_mgr.deinit();
 
         const dir = std.Io.Dir.cwd();
@@ -242,6 +248,7 @@ test "Server execution logic" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -300,6 +307,7 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -662,6 +670,7 @@ test "Extended Data Types and Advanced Aggregations" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
     
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -755,6 +764,7 @@ test "BTree concurrent insertions" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -821,6 +831,7 @@ test "BTree extensive deletions and merges" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
@@ -880,6 +891,7 @@ test "Secondary Index" {
     defer std.Io.Dir.cwd().deleteFile(io, "sys_tables") catch {};
     
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);

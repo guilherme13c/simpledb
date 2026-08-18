@@ -99,6 +99,7 @@ fn benchmark_buffer_manager(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
@@ -133,6 +134,7 @@ fn benchmark_btree(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
@@ -180,6 +182,7 @@ fn benchmark_table(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
@@ -255,6 +258,7 @@ fn benchmark_execution(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
@@ -342,6 +346,7 @@ fn benchmark_eviction(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     // Small buffer pool to force eviction
@@ -396,6 +401,7 @@ fn benchmark_secondary_index(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
@@ -456,6 +462,7 @@ fn benchmark_scan_resistance(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     // pool_size is 4096. 
@@ -502,6 +509,7 @@ fn benchmark_mvcc(allocator: std.mem.Allocator, io: std.Io) !void {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
     
     var storage_mgr = try sm.StorageManager.init(allocator, io, test_db);
+    try storage_mgr.start();
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);

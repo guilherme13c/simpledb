@@ -405,6 +405,7 @@ test "BufferManager lifecycle" {
     defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
 
     var sm_inst = try sm.StorageManager.init(std.testing.allocator, io, test_db);
+    try sm_inst.start();
     defer sm_inst.deinit();
 
     // Setup an empty file so reads don't fail for large offsets in tests

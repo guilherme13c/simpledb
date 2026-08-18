@@ -18,9 +18,30 @@ Requirements:
 - Zig 0.16.0
 - `perf` (linux-tools) for profiling
 
-**Running Tests:**
+**Running Unit Tests:**
 ```bash
 zig build test
+```
+
+**Running Integration Tests (Network, MVCC & ACID compliance):**
+```bash
+# In one terminal, start the server:
+zig build run
+# In another terminal, run the test suite:
+python3 tests/integration/test_server.py
+```
+
+**Running CBO Benchmarks:**
+```bash
+python3 benchmarks/bench_optimizer.py
+```
+
+**Running Fuzzing (AFL++):**
+```bash
+# Uses QEMU mode over the native binary
+zig build fuzz
+mkdir -p fuzz_in; echo "SELECT * FROM sys_tables;" > fuzz_in/seed1.sql
+afl-fuzz -Q -i fuzz_in -o fuzz_out -- ./zig-out/bin/fuzz
 ```
 
 **Running Benchmark Report:**

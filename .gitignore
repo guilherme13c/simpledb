@@ -4,3 +4,5 @@ data/
 .zig-cache/
 .benchmark_cache/
 profiling/
+*.log
+scratch/

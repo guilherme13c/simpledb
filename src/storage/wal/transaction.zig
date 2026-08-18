@@ -19,6 +19,8 @@ pub const TransactionContext = struct {
         
         if (!created_visible) return false;
 
+        if (xmax == std.math.maxInt(u32)) return false;
+
         const not_deleted = (xmax == 0) or (xmax > self.txn_id) or 
             (self.active_snapshot != null and self.active_snapshot.?.contains(xmax));
 

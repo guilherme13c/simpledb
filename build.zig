@@ -153,4 +153,16 @@ pub fn build(b: *std.Build) void {
     flamegraphs_step.dependOn(execution_step);
     flamegraphs_step.dependOn(transaction_step);
     flamegraphs_step.dependOn(eviction_step);
+
+    // Fuzz step
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const fuzz_exe = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = fuzz_mod,
+    });
+    b.installArtifact(fuzz_exe);
 }

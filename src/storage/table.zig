@@ -18,6 +18,7 @@ pub const Table = struct {
     schema: []const @import("../query/ast.zig").ColumnDef,
     allocator: std.mem.Allocator,
     indexes: std.StringHashMap(IndexDef),
+    num_tuples: std.atomic.Value(u64),
 
     pub fn init(allocator: std.mem.Allocator, buffer_manager: *BufferManager, btree: *BTree, next_page_counter: *u32, schema: []const @import("../query/ast.zig").ColumnDef) !Table {
         const start_page_id = next_page_counter.*;
@@ -34,6 +35,7 @@ pub const Table = struct {
             .schema = schema,
             .allocator = allocator,
             .indexes = std.StringHashMap(IndexDef).init(allocator),
+            .num_tuples = std.atomic.Value(u64).init(0),
         };
     }
 
@@ -74,6 +76,7 @@ pub const Table = struct {
                 }
                 
                 self.buffer_manager.unpin_frame(frame, true);
+                _ = self.num_tuples.fetchAdd(1, .monotonic);
                 return rid;
             } else |err| {
                 self.buffer_manager.unpin_frame(frame, false);
@@ -228,6 +231,7 @@ pub const Table = struct {
                             try view.update_xmax(slot_id, std.math.maxInt(u32));
                             self.buffer_manager.unpin_frame(frame, true);
                         }
+                        _ = self.num_tuples.fetchSub(1, .monotonic);
                         return; // Successfully deleted the visible tuple
                     }
                 }

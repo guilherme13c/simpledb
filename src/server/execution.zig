@@ -115,14 +115,37 @@ pub fn execute_statement(
 
                 if (s.condition) |expr| {
                     if (exec.try_extract_index_condition(expr, table)) |extracted| {
-                        index_exec = exec.IndexScanExecutor{
-                            .table = table,
-                            .condition = extracted.cond,
-                            .index_btree = extracted.index,
-                            .txn_ctx = txn_ctx,
-                            .allocator = allocator,
-                        };
-                        base_executor = .{ .index_scan = &index_exec };
+                        const N = table.num_tuples.load(.monotonic);
+                        // CBO Cost Model
+                        // SeqScan requires iterating over all tuples.
+                        // IndexScan requires descending the BTree (cost ~3) plus looking up matching heap tuples (cost ~1 for eq).
+                        const cost_seq = N;
+                        const cost_idx = 4; // Flat cost estimate for point lookup
+                        
+                        if (cost_idx <= cost_seq) {
+                            index_exec = exec.IndexScanExecutor{
+                                .table = table,
+                                .condition = extracted.cond,
+                                .index_btree = extracted.index,
+                                .txn_ctx = txn_ctx,
+                                .allocator = allocator,
+                            };
+                            base_executor = .{ .index_scan = &index_exec };
+                        } else {
+                            // Fallback to SeqScan if table is tiny (SeqScan is better for cache locality on tiny data)
+                            seq_exec = exec.SeqScanExecutor{
+                                .table = table,
+                                .txn_ctx = txn_ctx,
+                                .allocator = allocator,
+                            };
+                            filter_exec = exec.FilterExecutor{
+                                .child = .{ .seq_scan = &seq_exec },
+                                .expression = expr,
+                                .schema = table.schema,
+                                .allocator = allocator,
+                            };
+                            base_executor = .{ .filter = &filter_exec };
+                        }
                     } else {
                         seq_exec = exec.SeqScanExecutor{
                             .table = table,
@@ -182,15 +205,31 @@ pub fn execute_statement(
                             }
                             
                             if (left_col_idx != null and right_col_idx != null) {
-                                sort_merge_join_exec = exec.SortMergeJoinExecutor{
-                                    .left_child = &left_executor_copy,
-                                    .right_child = &right_executor,
-                                    .left_join_col_idx = left_col_idx.?,
-                                    .right_join_col_idx = right_col_idx.?,
-                                    .allocator = allocator,
-                                };
-                                base_executor = .{ .sort_merge_join = &sort_merge_join_exec };
-                                use_sort_merge_join = true;
+                                const N_left = table.num_tuples.load(.monotonic);
+                                const N_right = right_table.num_tuples.load(.monotonic);
+
+                                // CBO Cost Model
+                                // NestedLoopJoin cost = N_left * N_right
+                                const cost_nlj = N_left * N_right;
+                                
+                                // SortMergeJoin cost = N_left * log2(N_left) + N_right * log2(N_right) + N_left + N_right
+                                const n_left_log = if (N_left > 1) N_left * std.math.log2_int(u64, N_left) else 0;
+                                const n_right_log = if (N_right > 1) N_right * std.math.log2_int(u64, N_right) else 0;
+                                const cost_smj = n_left_log + n_right_log + N_left + N_right;
+
+                                // We prefer SortMergeJoin if its cost is strictly less than NLJ, 
+                                // or if costs are equal and data is large enough to benefit from SMJ structure.
+                                if (cost_smj <= cost_nlj) {
+                                    sort_merge_join_exec = exec.SortMergeJoinExecutor{
+                                        .left_child = &left_executor_copy,
+                                        .right_child = &right_executor,
+                                        .left_join_col_idx = left_col_idx.?,
+                                        .right_join_col_idx = right_col_idx.?,
+                                        .allocator = allocator,
+                                    };
+                                    base_executor = .{ .sort_merge_join = &sort_merge_join_exec };
+                                    use_sort_merge_join = true;
+                                }
                             }
                         }
                         

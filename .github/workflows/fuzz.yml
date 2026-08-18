@@ -1,0 +1,66 @@
+name: Fuzz Testing
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Run a deeper fuzzing session every night at midnight
+    - cron: '0 0 * * *'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Install AFL++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y afl++ qemu-user
+
+      - name: Build Fuzz Target
+        run: zig build -p ./zig-out
+
+      - name: Prepare Seed Corpus
+        run: |
+          mkdir -p fuzz_in
+          echo "SELECT * FROM users;" > fuzz_in/select.sql
+          echo "INSERT INTO users VALUES (1, 'Test');" > fuzz_in/insert.sql
+          echo "CREATE TABLE dummy (id INT);" > fuzz_in/create.sql
+          echo "SELECT * FROM t1 JOIN t2 ON t1.id = t2.id;" > fuzz_in/join.sql
+
+      - name: Run AFL++ (QEMU Mode)
+        # Run for 60 seconds on PRs, or 10 minutes on nightly
+        run: |
+          FUZZ_TIME=$([[ "${{ github.event_name }}" == "schedule" ]] && echo "600" || echo "60")
+          echo "Running fuzzer for $FUZZ_TIME seconds..."
+          
+          # We use -Q (QEMU mode) because we compiled the Zig binary normally without afl-clang instrumentation
+          # AFL++ will dynamically instrument the binary at runtime
+          afl-fuzz -Q -i fuzz_in -o fuzz_out -V $FUZZ_TIME -- ./zig-out/bin/fuzz
+
+      - name: Check for Crashes
+        run: |
+          CRASHES=$(ls fuzz_out/default/crashes/id* 2>/dev/null | wc -l || echo "0")
+          if [ "$CRASHES" -gt 0 ]; then
+            echo "::error::Fuzzer discovered $CRASHES crashes! Check artifacts."
+            exit 1
+          else
+            echo "No crashes found."
+          fi
+
+      - name: Upload Crash Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-crashes
+          path: fuzz_out/default/crashes/

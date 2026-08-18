@@ -320,6 +320,34 @@ pub const BufferManager = struct {
         self.allocator.free(self.frames);
     }
 
+    pub fn checkpoint(self: *BufferManager) !void {
+        const io = self.storage_manager.io;
+        
+        // 1. Force flush all dirty frames synchronously
+        self.pool_mutex.lockUncancelable(io);
+        for (self.frames) |*f| {
+            if (f.state == .VALID and f.is_dirty) {
+                f.io_mutex.lockUncancelable(io);
+                if (f.is_dirty) {
+                    if (self.log_manager) |lm| {
+                        lm.flush(f.page.header.lsn) catch {};
+                    }
+                    self.storage_manager.write_page(f.page_id.?, &f.page) catch |err| {
+                        std.debug.print("Checkpoint flush failed for page {d}: {}\n", .{ f.page_id.?, err });
+                    };
+                    f.is_dirty = false;
+                }
+                f.io_mutex.unlock(io);
+            }
+        }
+        self.pool_mutex.unlock(io);
+
+        // 2. Append checkpoint record to WAL
+        if (self.log_manager) |lm| {
+            _ = try lm.append_record(0, 0, .checkpoint, 0, 0, &[_]u8{});
+        }
+    }
+
     pub fn evict_page(self: *BufferManager) !u32 {
         var iterations: u32 = 0;
         var first_pass_clean_only = true;

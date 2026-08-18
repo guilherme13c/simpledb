@@ -60,6 +60,12 @@ pub const Server = struct {
 
         std.debug.print("Server listening on 127.0.0.1:{d}\n", .{self.port});
 
+        const checkpointer = std.Thread.spawn(.{}, checkpointer_loop, .{self}) catch |err| {
+            std.debug.print("Failed to spawn checkpointer thread: {}\n", .{err});
+            return err;
+        };
+        checkpointer.detach();
+
         while (true) {
             var stream = listener.accept(self.io) catch |err| {
                 std.debug.print("Error accepting connection: {}\n", .{err});
@@ -76,8 +82,17 @@ pub const Server = struct {
         }
     }
 
-    /// Executes a statement directly (used by tests).
     pub fn execute_statement(self: *Server, stmt: @import("../query/ast.zig").Statement, txn_ctx: ?*@import("../storage/wal/transaction.zig").TransactionContext, writer: anytype, undo_stack: ?*std.ArrayList(@import("undo.zig").UndoOp)) !void {
         try @import("execution.zig").execute_statement(self.allocator, self.catalog, stmt, txn_ctx, writer, undo_stack);
+    }
+
+    fn checkpointer_loop(self: *Server) void {
+        while (true) {
+            std.time.sleep(5 * std.time.ns_per_s);
+            self.catalog.buffer_manager.checkpoint() catch |err| {
+                std.debug.print("Checkpointer failed: {}\n", .{err});
+            };
+            std.debug.print("[Checkpointer] Checkpoint complete.\n", .{});
+        }
     }
 };

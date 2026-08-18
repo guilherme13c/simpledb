@@ -3,17 +3,27 @@ const ast = @import("../query/ast.zig");
 const exec = @import("../query/executor.zig");
 const Catalog = @import("../storage/catalog.zig").Catalog;
 const undo = @import("undo.zig");
+const transaction = @import("../storage/wal/transaction.zig");
 
 /// Executes a parsed SQL statement.
 pub fn execute_statement(
     allocator: std.mem.Allocator,
     catalog: *Catalog,
-    stmt: ast.Statement,
-    txn_ctx: ?*@import("../storage/wal/transaction.zig").TransactionContext,
+    parsed_stmt: ast.Statement,
+    txn_ctx: ?*transaction.TransactionContext,
     writer: anytype,
     undo_stack: ?*std.ArrayList(undo.UndoOp),
 ) !void {
+    var stmt = parsed_stmt;
+    var is_explain = false;
+    
+    if (stmt == .explain) {
+        is_explain = true;
+        stmt = stmt.explain.*;
+    }
+
     switch (stmt) {
+        .explain => return,
         .create_table => |c| {
             try catalog.create_table(c.table_name, c.columns);
         },
@@ -316,6 +326,13 @@ pub fn execute_statement(
                         .allocator = allocator,
                     };
                     final_executor = .{ .limit = &limit_exec };
+                }
+                
+                if (is_explain) {
+                    if (@TypeOf(writer) != @TypeOf(null)) {
+                        try final_executor.explain(writer, 0);
+                    }
+                    return;
                 }
 
                 try final_executor.open();

@@ -130,6 +130,64 @@ pub const Executor = union(enum) {
             .limit => |e| e.close(),
         }
     }
+
+    /// Prints the query plan tree.
+    pub fn explain(self: *Executor, writer: anytype, depth: usize) anyerror!void {
+        var indent_buf: [64]u8 = undefined;
+        @memset(&indent_buf, ' ');
+        const indent_len = @min(depth * 2, 64);
+        const indent = indent_buf[0..indent_len];
+        
+        switch (self.*) {
+            .seq_scan => try writer.print("{s}-> SeqScan\n", .{indent}),
+            .index_scan => try writer.print("{s}-> IndexScan\n", .{indent}),
+            .filter => |e| {
+                try writer.print("{s}-> Filter\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
+            .project => |e| {
+                try writer.print("{s}-> Project\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
+            .nested_loop_join => |e| {
+                try writer.print("{s}-> NestedLoopJoin\n", .{indent});
+                try e.left_child.explain(writer, depth + 1);
+                try e.right_child.explain(writer, depth + 1);
+            },
+            .sort_merge_join => |e| {
+                try writer.print("{s}-> SortMergeJoin\n", .{indent});
+                try e.left_child.explain(writer, depth + 1);
+                try e.right_child.explain(writer, depth + 1);
+            },
+            .aggregate => |e| {
+                try writer.print("{s}-> Aggregate\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
+            .insert => try writer.print("{s}-> Insert\n", .{indent}),
+            .delete => {
+                try writer.print("{s}-> Delete\n", .{indent});
+                // Note: Delete may not have child explicitly in some designs, but if it does:
+                // try e.child.explain(writer, depth + 1);
+            },
+            .update => {
+                try writer.print("{s}-> Update\n", .{indent});
+                // try e.child.explain(writer, depth + 1);
+            },
+            .order_by => |e| {
+                try writer.print("{s}-> OrderBy\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
+            .limit => |e| {
+                try writer.print("{s}-> Limit\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
+            .hash_join => |e| {
+                try writer.print("{s}-> HashJoin\n", .{indent});
+                try e.left_child.explain(writer, depth + 1);
+                try e.right_child.explain(writer, depth + 1);
+            },
+        }
+    }
 };
 
 

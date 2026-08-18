@@ -100,6 +100,7 @@ pub const StatementType = enum {
     begin,
     commit,
     rollback,
+    explain,
 };
 
 pub const Statement = union(StatementType) {
@@ -133,4 +134,5 @@ pub const Statement = union(StatementType) {
     begin: void,
     commit: void,
     rollback: void,
+    explain: *Statement,
 };

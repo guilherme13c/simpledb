@@ -8,6 +8,7 @@ pub const LogRecordType = enum(u8) {
     delete_tuple = 4,
     update_tuple = 5,
     update_page_meta = 6,
+    checkpoint = 7,
 };
 
 pub const LogRecordHeader = extern struct {

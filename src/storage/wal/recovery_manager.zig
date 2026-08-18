@@ -59,7 +59,7 @@ pub const RecoveryManager = struct {
             // Update ATT
             if (header.record_type == .commit or header.record_type == .abort) {
                 _ = self.att.remove(header.txn_id);
-            } else {
+            } else if (header.record_type != .checkpoint) {
                 try self.att.put(header.txn_id, header.lsn);
             }
             

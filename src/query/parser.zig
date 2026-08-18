@@ -60,6 +60,12 @@ pub const Parser = struct {
                 if (self.current_token.token_type == .Semicolon) self.advance();
                 return .rollback;
             },
+            .KeywordExplain => {
+                self.advance();
+                const stmt_ptr = try self.allocator.create(ast.Statement);
+                stmt_ptr.* = try self.parse_statement();
+                return .{ .explain = stmt_ptr };
+            },
             else => return error.UnexpectedToken,
         }
     }

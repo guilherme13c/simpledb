@@ -1,0 +1,98 @@
+const std = @import("std");
+const ast = @import("../ast.zig");
+const Table = @import("../../storage/table.zig").Table;
+const Catalog = @import("../../storage/catalog.zig").Catalog;
+const TransactionContext = @import("../../storage/wal/transaction.zig").TransactionContext;
+const Executor = @import("../executor.zig").Executor;
+const resolve_column = @import("../executor.zig").resolve_column;
+const evaluate_expression = @import("../executor.zig").evaluate_expression;
+const compare_values = @import("../executor.zig").compare_values;
+const evaluate_join_expression = @import("../executor.zig").evaluate_join_expression;
+const dupe_value = @import("../executor.zig").dupe_value;
+const free_tuple = @import("../executor.zig").free_tuple;
+const ValueContext = @import("../executor.zig").ValueContext;
+
+// ─── SeqScan ─────────────────────────────────────────────────────────────────
+
+pub const SeqScanExecutor = struct {
+    table: *Table,
+    allocator: std.mem.Allocator,
+    txn_ctx: ?*TransactionContext = null,
+    rids: []u64 = &[_]u64{},
+    current_idx: usize = 0,
+    current_frame: ?*@import("../../storage/buffer_manager/buffer_manager.zig").Frame = null,
+    current_page_id: ?u32 = null,
+
+    /// Initializes the executor and prepares it to yield tuples.
+    pub fn open(self: *SeqScanExecutor) !void {
+        self.rids = try self.table.btree.scan(self.allocator, 0, std.math.maxInt(u64));
+        self.current_idx = 0;
+        self.current_frame = null;
+        self.current_page_id = null;
+    }
+
+    /// Cleans up any resources or state allocated by the executor.
+    pub fn close(self: *SeqScanExecutor) void {
+        if (self.current_frame) |f| {
+            self.table.buffer_manager.unpin_frame(f, false);
+            self.current_frame = null;
+            self.current_page_id = null;
+        }
+        if (self.rids.len > 0) {
+            self.allocator.free(self.rids);
+            self.rids = &[_]u64{};
+        }
+    }
+
+    /// Retrieves the next tuple from the executor. Returns null if no more tuples.
+    pub fn next(self: *SeqScanExecutor) !?[]ast.Value {
+        while (self.current_idx < self.rids.len) {
+            const rid = self.rids[self.current_idx];
+            self.current_idx += 1;
+
+            if (self.txn_ctx) |ctx| {
+                try ctx.lock_row_shared(self.table.btree.root_page_id, rid);
+            }
+
+            const heap_page_id: u32 = @intCast(rid >> 32);
+            const slot_id: u16 = @intCast(rid & 0xFFFF);
+
+            if (self.current_page_id == null or self.current_page_id.? != heap_page_id) {
+                if (self.current_frame) |f| {
+                    self.table.buffer_manager.unpin_frame(f, false);
+                }
+                self.current_frame = try self.table.buffer_manager.fetch_frame(heap_page_id);
+                self.current_page_id = heap_page_id;
+            }
+
+            const frame = self.current_frame.?;
+            var view = @import("../../storage/page/slotted_view.zig").SlottedView.init(&frame.page, false);
+            if (view.get_tuple(slot_id)) |full_data| {
+                if (full_data.len >= 8) {
+                    const xmin = std.mem.readInt(u32, full_data[0..4][0..4], .little);
+                    const xmax = std.mem.readInt(u32, full_data[4..8][0..4], .little);
+                    
+                    var is_visible = true;
+                    if (self.txn_ctx) |ctx| {
+                        is_visible = ctx.is_visible(xmin, xmax);
+                    } else {
+                        is_visible = (xmax == 0);
+                    }
+                    
+                    if (is_visible) {
+                        const data = full_data[8..];
+                        if (self.table.schema.len > 0) {
+                            return try self.table.deserialize_tuple(self.allocator, data);
+                        } else {
+                            var tuple = try self.allocator.alloc(ast.Value, 1);
+                            tuple[0] = .{ .varchar = try self.allocator.dupe(u8, data) };
+                            return tuple;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+};
+

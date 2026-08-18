@@ -6,3 +6,4 @@ data/
 profiling/
 *.log
 scratch/
+test_*.zig

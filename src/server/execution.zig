@@ -27,6 +27,9 @@ pub fn execute_statement(
         .create_table => |c| {
             try catalog.create_table(c.table_name, c.columns);
         },
+        .alter_table => |a| {
+            try catalog.alter_table(a.table_name, a.action);
+        },
         .create_index => |c| {
             try catalog.create_index(c.index_name, c.table_name, c.column_name);
         },
@@ -57,60 +60,108 @@ pub fn execute_statement(
         },
         .delete => |d| {
             if (catalog.get_table(d.table_name)) |table| {
+                var base_executor: exec.Executor = undefined;
+                var seq_exec: exec.SeqScanExecutor = undefined;
+                var index_exec: exec.IndexScanExecutor = undefined;
+                var filter_exec: exec.FilterExecutor = undefined;
+
                 if (d.condition) |expr| {
                     if (exec.try_extract_index_condition(expr, table)) |extracted| {
-                        switch (extracted.cond) {
-                            .eq => |eq| {
-                                if (undo_stack) |us| {
-                                    if (table.search(allocator, txn_ctx, eq.key) catch null) |old_val| {
-                                        defer allocator.free(old_val);
-                                        const tname = try allocator.dupe(u8, d.table_name);
-                                        const v = try allocator.dupe(u8, old_val);
-                                        try us.append(allocator, .{ .insert_key = .{ .table_name = tname, .key = eq.key, .value = v } });
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
-                        var delete_exec = exec.DeleteExecutor{
+                        index_exec = exec.IndexScanExecutor{
                             .table = table,
                             .condition = extracted.cond,
+                            .index_btree = extracted.index,
                             .txn_ctx = txn_ctx,
                             .allocator = allocator,
                         };
-                        try delete_exec.open();
-                        _ = try delete_exec.next();
+                        base_executor = .{ .index_scan = &index_exec };
                     } else {
-                        return error.UnsupportedCondition;
+                        seq_exec = exec.SeqScanExecutor{
+                            .table = table,
+                            .txn_ctx = txn_ctx,
+                            .allocator = allocator,
+                        };
+                        filter_exec = exec.FilterExecutor{
+                            .child = .{ .seq_scan = &seq_exec },
+                            .expression = expr,
+                            .schema = table.schema,
+                            .allocator = allocator,
+                        };
+                        base_executor = .{ .filter = &filter_exec };
                     }
                 } else {
-                    return error.MissingCondition;
+                    seq_exec = exec.SeqScanExecutor{
+                        .table = table,
+                        .txn_ctx = txn_ctx,
+                        .allocator = allocator,
+                    };
+                    base_executor = .{ .seq_scan = &seq_exec };
                 }
+
+                var delete_exec = exec.DeleteExecutor{
+                    .table = table,
+                    .child = &base_executor,
+                    .txn_ctx = txn_ctx,
+                    .allocator = allocator,
+                };
+                try delete_exec.open();
+                defer delete_exec.close();
+                _ = try delete_exec.next();
             } else {
                 return error.TableNotFound;
             }
         },
         .update => |u| {
             if (catalog.get_table(u.table_name)) |table| {
+                var base_executor: exec.Executor = undefined;
+                var seq_exec: exec.SeqScanExecutor = undefined;
+                var index_exec: exec.IndexScanExecutor = undefined;
+                var filter_exec: exec.FilterExecutor = undefined;
+
                 if (u.condition) |expr| {
                     if (exec.try_extract_index_condition(expr, table)) |extracted| {
-                        var update_exec = exec.UpdateExecutor{
+                        index_exec = exec.IndexScanExecutor{
                             .table = table,
                             .condition = extracted.cond,
                             .index_btree = extracted.index,
-                            .column_name = u.column_name,
-                            .new_value = u.value,
                             .txn_ctx = txn_ctx,
                             .allocator = allocator,
                         };
-                        try update_exec.open();
-                        _ = try update_exec.next();
+                        base_executor = .{ .index_scan = &index_exec };
                     } else {
-                        return error.UnsupportedCondition;
+                        seq_exec = exec.SeqScanExecutor{
+                            .table = table,
+                            .txn_ctx = txn_ctx,
+                            .allocator = allocator,
+                        };
+                        filter_exec = exec.FilterExecutor{
+                            .child = .{ .seq_scan = &seq_exec },
+                            .expression = expr,
+                            .schema = table.schema,
+                            .allocator = allocator,
+                        };
+                        base_executor = .{ .filter = &filter_exec };
                     }
                 } else {
-                    return error.MissingCondition;
+                    seq_exec = exec.SeqScanExecutor{
+                        .table = table,
+                        .txn_ctx = txn_ctx,
+                        .allocator = allocator,
+                    };
+                    base_executor = .{ .seq_scan = &seq_exec };
                 }
+
+                var update_exec = exec.UpdateExecutor{
+                    .table = table,
+                    .child = &base_executor,
+                    .column_name = u.column_name,
+                    .new_value = u.value,
+                    .txn_ctx = txn_ctx,
+                    .allocator = allocator,
+                };
+                try update_exec.open();
+                defer update_exec.close();
+                _ = try update_exec.next();
             } else {
                 return error.TableNotFound;
             }

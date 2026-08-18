@@ -8,7 +8,7 @@ All notable changes to the SimpleDB project will be documented in this file.
 - **Extended Data Types**: Expanded schema support to include `Float` (f64), `Timestamp` (i64), `JSON` (String), `UUID` (16 bytes), and `Signed Integer` (i64) data types.
 - **Advanced Query Features**: Added Aggregation support (`COUNT`, `SUM`, `MIN`, `MAX`, `AVG`) with `GROUP BY` using in-memory hash aggregation, as well as `Sort-Merge Join` logic.
 - **CLI / REPL Shell**: Built a robust native command-line interface via `--cli`. Supports multi-line input and provides direct terminal-based interaction.
-- **System SQL Capabilities**: Introduced a custom SQL subset with a Lexer, Parser, AST, and Volcano-style Executor (`src/query/`). Supports `SELECT`, `INSERT`, `DELETE`, `CREATE TABLE`, `DROP TABLE`, Sequential Scans, Index Scans, Projections, Filters, and Nested Loop Joins.
+- **System SQL Capabilities**: Introduced a custom SQL subset with a Lexer, Parser, AST, and Volcano-style Executor (`src/query/`). Supports `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` (`ADD COLUMN`, `RENAME COLUMN`), Sequential Scans, Index Scans, Projections, Filters, and Nested Loop Joins.
 - **Transactions & ARIES Recovery**: Added a Write-Ahead Log (WAL) and recovery manager implementing physical ARIES-style recovery (Analysis, Redo, Undo passes), ensuring ACID compliance (`src/storage/wal/`).
 - **Clock Sweep Buffer Manager**: Upgraded the buffer manager's replacement policy to use the Clock Sweep (Second-Chance) algorithm.
 - **Performance Profiling**: Added automated flamegraph profiling capabilities and comprehensive benchmarking targets using Linux `perf` (`zig build flamegraphs`).

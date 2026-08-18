@@ -88,7 +88,7 @@ pub const Server = struct {
 
     fn checkpointer_loop(self: *Server) void {
         while (true) {
-            std.time.sleep(5 * std.time.ns_per_s);
+            self.io.sleep(std.Io.Duration.fromSeconds(5), .awake) catch {};
             self.catalog.buffer_manager.checkpoint() catch |err| {
                 std.debug.print("Checkpointer failed: {}\n", .{err});
             };

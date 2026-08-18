@@ -25,7 +25,7 @@ The logical tier. A `Table` couples a primary B+Tree with the Slotted Pages requ
 - **Concurrency Control (MVCC):** Utilizes **Multi-Version Concurrency Control (MVCC)** to allow lock-free reads while transactions write concurrently. It maintains an **Undo Log** for each transaction to construct older versions of tuples for snapshot isolation, guaranteeing serializability and point-in-time consistency without blocking readers.
 
 ### 6. Query Parsing & Execution (`lexer.zig`, `parser.zig`, `ast.zig`, `executor.zig`)
-The syntax and compute tier. SimpleDB implements a custom SQL subset. Incoming queries are tokenized by the `Lexer`, parsed into an Abstract Syntax Tree (AST) by the `Parser`, and structured into logical execution nodes. These nodes are then executed using a **Volcano-style Iterator Model** (`executor.zig`) supporting sequential/index scans, projections, filtering, hash aggregations (`GROUP BY`), and sort-merge/nested-loop joins.
+The syntax and compute tier. SimpleDB implements a custom SQL subset. Incoming queries are tokenized by the `Lexer`, parsed into an Abstract Syntax Tree (AST) by the `Parser`, and structured into logical execution nodes. These nodes are then executed using a **Volcano-style Iterator Model** (`executor.zig`) supporting sequential/index scans, projections, filtering, hash aggregations (`GROUP BY`), sort-merge/nested-loop joins, and schema mutations (`ALTER TABLE`).
 
 ### 7. Interface Tier (`server.zig` & `cli.zig`)
 The interface tier provides two distinct interaction models:

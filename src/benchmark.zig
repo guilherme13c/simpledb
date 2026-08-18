@@ -581,9 +581,16 @@ fn benchmark_mvcc(allocator: std.mem.Allocator, io: std.Io) !void {
     for (0..num_updates) |u| {
         var txn_update = @import("storage/wal/transaction.zig").TransactionContext{ .txn_id = @intCast(3 + u) };
         for (0..num_records) |i| {
-            var upd = exec.UpdateExecutor{
+            var index_exec = exec.IndexScanExecutor{
                 .table = table,
                 .condition = .{ .eq = .{ .key = @intCast(i) } },
+                .allocator = allocator,
+                .txn_ctx = &txn_update,
+            };
+            var base_executor: exec.Executor = .{ .index_scan = &index_exec };
+            var upd = exec.UpdateExecutor{
+                .table = table,
+                .child = &base_executor,
                 .column_name = "balance",
                 .new_value = .{ .int = @intCast(100 + u + 1) },
                 .txn_ctx = &txn_update,

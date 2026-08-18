@@ -89,10 +89,23 @@ pub const AggregateExpr = struct {
     column: ?[]const u8, // null for count(*)
 };
 
+pub const AlterActionType = enum {
+    add_column,
+    drop_column,
+    rename_column,
+};
+
+pub const AlterAction = union(AlterActionType) {
+    add_column: ColumnDef,
+    drop_column: []const u8,
+    rename_column: struct { old_name: []const u8, new_name: []const u8 },
+};
+
 pub const StatementType = enum {
     create_table,
     create_index,
     drop_table,
+    alter_table,
     insert,
     select,
     delete,
@@ -107,6 +120,7 @@ pub const Statement = union(StatementType) {
     create_table: struct { table_name: []const u8, columns: []const ColumnDef },
     create_index: struct { index_name: []const u8, table_name: []const u8, column_name: []const u8 },
     drop_table: struct { table_name: []const u8 },
+    alter_table: struct { table_name: []const u8, action: AlterAction },
     insert: struct { table_name: []const u8, values: []const Value },
     select: struct { 
         columns: ?[]const []const u8, // null means '*'

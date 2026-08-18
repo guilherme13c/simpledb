@@ -572,13 +572,21 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
 
     // ── DeleteExecutor: delete key=2, then verify 4 remain ──
     {
-        var del = exec.DeleteExecutor{
+        var index_exec = exec.IndexScanExecutor{
             .table = table,
             .condition = .{ .eq = .{ .key = 2 } },
+            .allocator = std.testing.allocator,
+            .txn_ctx = null,
+        };
+        var base_executor: exec.Executor = .{ .index_scan = &index_exec };
+        var del = exec.DeleteExecutor{
+            .table = table,
+            .child = &base_executor,
             .txn_ctx = null,
             .allocator = std.testing.allocator,
         };
         try del.open();
+        defer del.close();
         _ = try del.next();
 
         var seq = exec.SeqScanExecutor{
@@ -597,15 +605,23 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
 
     // ── UpdateExecutor: update name to 'updated_alice' where id=1 ──
     {
-        var upd = exec.UpdateExecutor{
+        var index_exec = exec.IndexScanExecutor{
             .table = table,
             .condition = .{ .eq = .{ .key = 1 } },
+            .allocator = std.testing.allocator,
+            .txn_ctx = null,
+        };
+        var base_executor: exec.Executor = .{ .index_scan = &index_exec };
+        var upd = exec.UpdateExecutor{
+            .table = table,
+            .child = &base_executor,
             .column_name = "name",
             .new_value = .{ .varchar = "updated_alice" },
             .txn_ctx = null,
             .allocator = std.testing.allocator,
         };
         try upd.open();
+        defer upd.close();
         _ = try upd.next();
 
         // Verify update

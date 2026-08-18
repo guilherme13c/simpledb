@@ -39,6 +39,7 @@ pub const Parser = struct {
 
     pub fn parse_statement(self: *Parser) !ast.Statement {
         switch (self.current_token.token_type) {
+            .KeywordAlter => return self.parse_alter(),
             .KeywordCreate => return self.parse_create(),
             .KeywordDrop => return self.parse_drop(),
             .KeywordInsert => return self.parse_insert(),
@@ -156,6 +157,76 @@ pub const Parser = struct {
         }
 
         return .{ .drop_table = .{ .table_name = table_name } };
+    }
+
+    fn parse_alter(self: *Parser) !ast.Statement {
+        try self.match(.KeywordAlter);
+        try self.match(.KeywordTable);
+        
+        if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+        const table_name = self.current_token.text;
+        self.advance();
+
+        var action: ast.AlterAction = undefined;
+
+        switch (self.current_token.token_type) {
+            .KeywordAdd => {
+                self.advance();
+                if (self.current_token.token_type == .KeywordColumn) self.advance();
+                
+                if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+                const col_name = self.current_token.text;
+                self.advance();
+                
+                const col_type = switch (self.current_token.token_type) {
+                    .KeywordInt => ast.DataType.int,
+                    .KeywordVarchar => ast.DataType.varchar,
+                    .KeywordBool => ast.DataType.bool,
+                    .KeywordFloat => ast.DataType.float,
+                    .KeywordTimestamp => ast.DataType.timestamp,
+                    .KeywordJson => ast.DataType.json,
+                    .KeywordUuid => ast.DataType.uuid,
+                    .KeywordSignedInt => ast.DataType.signed_int,
+                    else => return error.UnexpectedToken,
+                };
+                self.advance();
+                action = .{ .add_column = .{ .name = col_name, .data_type = col_type } };
+            },
+            .KeywordDrop => {
+                self.advance();
+                if (self.current_token.token_type == .KeywordColumn) self.advance();
+                
+                if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+                const col_name = self.current_token.text;
+                self.advance();
+                
+                action = .{ .drop_column = col_name };
+            },
+            .KeywordRename => {
+                self.advance();
+                if (self.current_token.token_type == .KeywordColumn) self.advance();
+                
+                if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+                const old_name = self.current_token.text;
+                self.advance();
+                
+                try self.match(.KeywordTo);
+                
+                if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+                const new_name = self.current_token.text;
+                self.advance();
+                
+                action = .{ .rename_column = .{ .old_name = old_name, .new_name = new_name } };
+            },
+            else => return error.UnexpectedToken,
+        }
+
+        if (self.current_token.token_type == .Semicolon) self.advance();
+
+        return .{ .alter_table = .{
+            .table_name = table_name,
+            .action = action,
+        }};
     }
 
     fn parse_insert(self: *Parser) !ast.Statement {

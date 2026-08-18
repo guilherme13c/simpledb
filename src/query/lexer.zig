@@ -1,6 +1,11 @@
 const std = @import("std");
 
 pub const TokenType = enum {
+    KeywordAlter,
+    KeywordAdd,
+    KeywordRename,
+    KeywordColumn,
+    KeywordTo,
     KeywordCreate,
     KeywordTable,
     KeywordIndex,
@@ -159,6 +164,11 @@ pub const Lexer = struct {
             const text = self.input[start..self.pos];
             
             // Check keywords (case-insensitive)
+            if (case_insensitive_eq(text, "ALTER")) return .{ .token_type = .KeywordAlter, .text = text };
+            if (case_insensitive_eq(text, "ADD")) return .{ .token_type = .KeywordAdd, .text = text };
+            if (case_insensitive_eq(text, "RENAME")) return .{ .token_type = .KeywordRename, .text = text };
+            if (case_insensitive_eq(text, "COLUMN")) return .{ .token_type = .KeywordColumn, .text = text };
+            if (case_insensitive_eq(text, "TO")) return .{ .token_type = .KeywordTo, .text = text };
             if (case_insensitive_eq(text, "CREATE")) return .{ .token_type = .KeywordCreate, .text = text };
             if (case_insensitive_eq(text, "TABLE")) return .{ .token_type = .KeywordTable, .text = text };
             if (case_insensitive_eq(text, "DROP")) return .{ .token_type = .KeywordDrop, .text = text };

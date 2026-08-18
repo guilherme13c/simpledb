@@ -304,6 +304,19 @@ pub const Table = struct {
         var values = try allocator.alloc(@import("../query/ast.zig").Value, self.schema.len);
         var offset: usize = 0;
         for (self.schema, 0..) |col, i| {
+            if (offset >= data.len) {
+                switch (col.data_type) {
+                    .int => values[i] = .{ .int = 0 },
+                    .bool => values[i] = .{ .bool = false },
+                    .varchar => values[i] = .{ .varchar = try allocator.dupe(u8, "") },
+                    .float => values[i] = .{ .float = 0.0 },
+                    .timestamp => values[i] = .{ .timestamp = 0 },
+                    .json => values[i] = .{ .json = try allocator.dupe(u8, "{}") },
+                    .uuid => values[i] = .{ .uuid = [_]u8{0} ** 16 },
+                    .signed_int => values[i] = .{ .signed_int = 0 },
+                }
+                continue;
+            }
             switch (col.data_type) {
                 .int => {
                     values[i] = .{ .int = std.mem.readInt(u64, data[offset..offset+8][0..8], .little) };

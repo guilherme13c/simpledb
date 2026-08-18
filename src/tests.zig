@@ -36,6 +36,7 @@ test "BTree insertion and scan" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -91,6 +92,7 @@ test "Catalog and Table end-to-end" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -130,6 +132,7 @@ test "Schema Serialization and Deserialization" {
         defer storage_mgr.deinit();
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
         defer buffer_mgr.deinit();
 
         var next_page_counter: u32 = 1;
@@ -153,6 +156,7 @@ test "Schema Serialization and Deserialization" {
         defer storage_mgr.deinit();
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
         defer buffer_mgr.deinit();
 
         var next_page_counter: u32 = 1;
@@ -196,6 +200,7 @@ test "LogManager and RecoveryManager physical logging" {
         var log_mgr = try LogManager.init(io, wal_file);
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
         buffer_mgr.log_manager = &log_mgr;
         defer buffer_mgr.deinit();
 
@@ -226,6 +231,7 @@ test "LogManager and RecoveryManager physical logging" {
         var log_mgr = try LogManager.init(io, wal_file);
 
         var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
         buffer_mgr.log_manager = &log_mgr;
         defer buffer_mgr.deinit();
 
@@ -252,6 +258,7 @@ test "Server execution logic" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -311,6 +318,7 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -674,6 +682,7 @@ test "Extended Data Types and Advanced Aggregations" {
     defer storage_mgr.deinit();
     
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
     
     var next_page_counter: u32 = 1;
@@ -768,6 +777,7 @@ test "BTree concurrent insertions" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -835,6 +845,7 @@ test "BTree extensive deletions and merges" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -895,6 +906,7 @@ test "Secondary Index" {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;

@@ -38,6 +38,19 @@ pub const BufferManager = struct {
     hand: u32,
     pool_mutex: std.Io.Mutex,
 
+    flusher_thread: std.Thread,
+    stop_flusher: std.atomic.Value(bool),
+    flusher_event: std.Io.Event,
+
+    prefetch_thread: std.Thread,
+    prefetch_event: std.Io.Event,
+    prefetch_queue: [64]u32,
+    prefetch_head: std.atomic.Value(usize),
+    prefetch_tail: std.atomic.Value(usize),
+
+    last_fetched_page_id: std.atomic.Value(u32),
+    sequential_counter: std.atomic.Value(u32),
+
     inline fn hash_page(page_id: u32) u32 {
         return (page_id *% 2654435769) & (map_size - 1);
     }
@@ -67,6 +80,16 @@ pub const BufferManager = struct {
             .hash_next = hash_next,
             .hand = 0,
             .pool_mutex = .init,
+            .flusher_thread = undefined,
+            .stop_flusher = std.atomic.Value(bool).init(false),
+            .flusher_event = .unset,
+            .prefetch_thread = undefined,
+            .prefetch_event = .unset,
+            .prefetch_queue = undefined,
+            .prefetch_head = std.atomic.Value(usize).init(0),
+            .prefetch_tail = std.atomic.Value(usize).init(0),
+            .last_fetched_page_id = std.atomic.Value(u32).init(empty),
+            .sequential_counter = std.atomic.Value(u32).init(0),
         };
     }
 
@@ -74,8 +97,212 @@ pub const BufferManager = struct {
         self.log_manager = lm;
     }
 
+    pub fn start(self: *BufferManager) !void {
+        self.flusher_thread = try std.Thread.spawn(.{}, flusher_loop, .{self});
+        self.prefetch_thread = try std.Thread.spawn(.{}, prefetcher_loop, .{self});
+    }
+
+    fn flusher_loop(self: *BufferManager) void {
+        const io = self.storage_manager.io;
+        while (!self.stop_flusher.load(.monotonic)) {
+            // Wake up every 10ms or when explicitly signaled
+            const timeout = std.Io.Timeout{
+                .duration = .{
+                    .raw = .{ .nanoseconds = 10 * std.time.ns_per_ms },
+                    .clock = .awake,
+                },
+            };
+            self.flusher_event.waitTimeout(io, timeout) catch {};
+            self.flusher_event.reset();
+            
+            if (self.stop_flusher.load(.monotonic)) break;
+
+            var batch_page_ids: [128]u32 = undefined;
+            var batch_pages: [128]*const page.Page = undefined;
+            var batch_frame_ids: [128]u32 = undefined;
+            var batch_count: usize = 0;
+
+            self.pool_mutex.lockUncancelable(io);
+            for (self.frames) |*f| {
+                if (batch_count >= 128) break;
+                if (f.state == .VALID and f.is_dirty and f.pin_count == 0) {
+                    f.pin_count += 1; // Pin it so it doesn't get evicted while flushing
+                    batch_page_ids[batch_count] = f.page_id.?;
+                    batch_pages[batch_count] = &f.page;
+                    batch_frame_ids[batch_count] = f.frame_id;
+                    batch_count += 1;
+                }
+            }
+            self.pool_mutex.unlock(io);
+
+            if (batch_count > 0) {
+                // WAL flush
+                if (self.log_manager) |lm| {
+                    var max_lsn: u32 = 0;
+                    for (batch_pages[0..batch_count]) |p| {
+                        if (p.header.lsn > max_lsn) max_lsn = p.header.lsn;
+                    }
+                    if (max_lsn > 0) {
+                        lm.flush(max_lsn) catch {};
+                    }
+                }
+
+                // Batch write to disk
+                self.storage_manager.write_pages(batch_page_ids[0..batch_count], batch_pages[0..batch_count]) catch {};
+
+                // Unpin and mark clean
+                self.pool_mutex.lockUncancelable(io);
+                for (batch_frame_ids[0..batch_count]) |frame_id| {
+                    var f = &self.frames[frame_id];
+                    f.is_dirty = false;
+                    f.pin_count -= 1;
+                }
+                self.pool_mutex.unlock(io);
+            }
+        }
+    }
+
+    fn enqueue_prefetch(self: *BufferManager, start_page_id: u32) void {
+        const tail = self.prefetch_tail.load(.monotonic);
+        const next_tail = (tail + 1) % self.prefetch_queue.len;
+        if (next_tail == self.prefetch_head.load(.monotonic)) {
+            return; // Queue full
+        }
+        self.prefetch_queue[tail] = start_page_id;
+        self.prefetch_tail.store(next_tail, .release);
+        self.prefetch_event.set(self.storage_manager.io);
+    }
+
+    fn do_prefetch(self: *BufferManager, start_page_id: u32, count: u32) void {
+        const io = self.storage_manager.io;
+        var batch_page_ids: [128]u32 = undefined;
+        var batch_destinations: [128]*page.Page = undefined;
+        var batch_frames: [128]*Frame = undefined;
+        var batch_count: usize = 0;
+
+        for (0..count) |i| {
+            const page_id = start_page_id + @as(u32, @intCast(i));
+            
+            self.pool_mutex.lockUncancelable(io);
+            // Check if already in pool
+            var search_curr = self.hash_head[hash_page(page_id)];
+            var found = false;
+            while (search_curr != empty) {
+                if (self.frames[search_curr].page_id == page_id) {
+                    found = true;
+                    break;
+                }
+                search_curr = self.hash_next[search_curr];
+            }
+            
+            if (found) {
+                self.pool_mutex.unlock(io);
+                continue;
+            }
+
+            const victim_id = self.evict_page() catch {
+                self.pool_mutex.unlock(io);
+                break; // Pool full, stop prefetching
+            };
+            var frame = &self.frames[victim_id];
+            
+            frame.io_mutex.lockUncancelable(io);
+
+            const old_page_id = frame.page_id;
+            const old_state = frame.state;
+            const is_dirty = frame.is_dirty;
+
+            if (old_page_id) |old_page| {
+                const h = hash_page(old_page);
+                var curr = self.hash_head[h];
+                var prev: u32 = empty;
+                while (curr != empty) {
+                    if (curr == victim_id) {
+                        if (prev == empty) {
+                            self.hash_head[h] = self.hash_next[curr];
+                        } else {
+                            self.hash_next[prev] = self.hash_next[curr];
+                        }
+                        break;
+                    }
+                    prev = curr;
+                    curr = self.hash_next[curr];
+                }
+            }
+
+            frame.page_id = page_id;
+            frame.pin_count = 1; // Temporarily pin it
+            frame.state = .VALID;
+            frame.usage_count = 1;
+
+            const new_h = hash_page(page_id);
+            self.hash_next[victim_id] = self.hash_head[new_h];
+            self.hash_head[new_h] = victim_id;
+
+            // Synchronously flush dirty victim if necessary
+            if (old_state == .VALID and is_dirty) {
+                self.pool_mutex.unlock(io);
+                if (self.log_manager) |lm| {
+                    lm.flush(frame.page.header.lsn) catch {};
+                }
+                self.storage_manager.write_page(old_page_id.?, &frame.page) catch {
+                    frame.io_mutex.unlock(io);
+                    continue;
+                };
+            } else {
+                self.pool_mutex.unlock(io);
+            }
+
+            batch_page_ids[batch_count] = page_id;
+            batch_destinations[batch_count] = &frame.page;
+            batch_frames[batch_count] = frame;
+            batch_count += 1;
+        }
+
+        if (batch_count > 0) {
+            self.storage_manager.read_pages(batch_page_ids[0..batch_count], batch_destinations[0..batch_count]) catch {};
+
+            self.pool_mutex.lockUncancelable(io);
+            for (batch_frames[0..batch_count]) |f| {
+                f.is_dirty = false;
+                f.pin_count -= 1; // Unpin it
+                f.io_mutex.unlock(io);
+            }
+            self.pool_mutex.unlock(io);
+        }
+    }
+
+    fn prefetcher_loop(self: *BufferManager) void {
+        const io = self.storage_manager.io;
+        while (!self.stop_flusher.load(.monotonic)) {
+            const timeout = std.Io.Timeout{
+                .duration = .{ .raw = .{ .nanoseconds = 10 * std.time.ns_per_ms }, .clock = .awake },
+            };
+            self.prefetch_event.waitTimeout(io, timeout) catch {};
+            self.prefetch_event.reset();
+
+            if (self.stop_flusher.load(.monotonic)) break;
+
+            while (true) {
+                const head = self.prefetch_head.load(.acquire);
+                if (head == self.prefetch_tail.load(.monotonic)) break;
+
+                const start_page_id = self.prefetch_queue[head];
+                self.prefetch_head.store((head + 1) % self.prefetch_queue.len, .monotonic);
+
+                self.do_prefetch(start_page_id, 32);
+            }
+        }
+    }
+
     pub fn deinit(self: *BufferManager) void {
         const io = self.storage_manager.io;
+        self.stop_flusher.store(true, .monotonic);
+        self.flusher_event.set(io);
+        self.prefetch_event.set(io);
+        self.flusher_thread.join();
+        self.prefetch_thread.join();
+
         self.pool_mutex.lockUncancelable(io);
         defer self.pool_mutex.unlock(io);
 
@@ -95,21 +322,42 @@ pub const BufferManager = struct {
 
     pub fn evict_page(self: *BufferManager) !u32 {
         var iterations: u32 = 0;
-        // In the worst case where all unpinned pages have usage_count=5,
-        // we might need to sweep 6 times.
-        while (iterations < pool_size * 6) {
+        var first_pass_clean_only = true;
+        var clean_pages_in_sweep: u32 = 0;
+        
+        while (iterations < pool_size * 12) {
             const frame_id = self.hand;
             self.hand = (self.hand + 1) % pool_size;
             iterations += 1;
 
+            if (iterations % pool_size == 0) {
+                if (clean_pages_in_sweep == 0) {
+                    first_pass_clean_only = false;
+                }
+                clean_pages_in_sweep = 0;
+            }
+
             var frame = &self.frames[frame_id];
+
             if (frame.state == .EMPTY) {
                 return frame_id;
             }
+
             if (frame.pin_count == 0) {
+                if (!frame.is_dirty) {
+                    clean_pages_in_sweep += 1;
+                } else {
+                    self.flusher_event.set(self.storage_manager.io);
+                }
+
                 if (frame.usage_count > 0) {
                     frame.usage_count -= 1;
-                } else {
+                }
+                
+                if (frame.usage_count == 0) {
+                    if (frame.is_dirty and first_pass_clean_only) {
+                        continue;
+                    }
                     return frame_id;
                 }
             }
@@ -118,6 +366,19 @@ pub const BufferManager = struct {
     }
 
     pub fn fetch_frame(self: *BufferManager, page_id: u32) !*Frame {
+        const last_fetched = self.last_fetched_page_id.load(.monotonic);
+        if (last_fetched != empty and page_id == last_fetched + 1) {
+            const seq_count = self.sequential_counter.load(.monotonic) + 1;
+            self.sequential_counter.store(seq_count, .monotonic);
+            if (seq_count >= 32) {
+                self.enqueue_prefetch(page_id + 1);
+                self.sequential_counter.store(0, .monotonic);
+            }
+        } else {
+            self.sequential_counter.store(0, .monotonic);
+        }
+        self.last_fetched_page_id.store(page_id, .monotonic);
+
         const io = self.storage_manager.io;
         self.pool_mutex.lockUncancelable(io);
 
@@ -414,6 +675,7 @@ test "BufferManager lifecycle" {
     try sm_inst.write_page(1, &empty_page);
 
     var bm = try BufferManager.init(std.testing.allocator, &sm_inst);
+    try bm.start();
     defer bm.deinit();
 
     // Fetch a page, modify it, unpin it

@@ -27,6 +27,7 @@ pub fn main(init: std.process.Init) !void {
     var log_mgr = try LogManager.init(io, wal_file);
 
     var buffer_mgr = try BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     buffer_mgr.log_manager = &log_mgr;
     defer buffer_mgr.deinit();
 

@@ -1,0 +1,6 @@
+zig-out/
+tmp/
+data/
+.zig-cache/
+.benchmark_cache/
+profiling/

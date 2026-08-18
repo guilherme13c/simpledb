@@ -12,6 +12,6 @@ pub const PageHeader = packed struct(u128) {
 };
 
 pub const Page = extern struct {
-    header: PageHeader,
+    header: PageHeader align(4096),
     content: [content_length]u8,
 };

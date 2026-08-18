@@ -1,0 +1,7 @@
+.{
+    .name = .simpledb,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0x89aa53c046d33b6f,
+}

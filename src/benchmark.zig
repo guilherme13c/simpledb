@@ -103,6 +103,7 @@ fn benchmark_buffer_manager(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     // Prepare pages
@@ -113,18 +114,20 @@ fn benchmark_buffer_manager(allocator: std.mem.Allocator, io: std.Io) !void {
         try storage_mgr.write_page(@intCast(i), &empty_page);
     }
 
+    // Sequential Scan
     const start_time = get_time_ms();
-    
-    // Sequential fetch
-    for (0..50) |_| {
+    for (0..5) |_| {
         for (0..num_pages) |i| {
+            if (i % 10000 == 0) std.debug.print("SeqFetch Page {d}\n", .{i});
             const frame = try buffer_mgr.fetch_frame(@intCast(i));
-            buffer_mgr.unpin_frame(frame, true);
+            // Read something to prevent optimization
+            _ = frame.page_id;
+            buffer_mgr.unpin_frame(frame, false);
         }
     }
-
-    const elapsed = get_time_ms() - start_time;
-    std.debug.print("Sequential Fetch & Pin (100k pages, 50x): {d} ms\n", .{elapsed});
+    const end_time = get_time_ms();
+    const elapsed = end_time - start_time;
+    std.debug.print("Sequential Fetch & Pin (100k pages, 5x): {d} ms\n", .{elapsed});
 }
 
 fn benchmark_btree(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -138,6 +141,7 @@ fn benchmark_btree(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -186,6 +190,7 @@ fn benchmark_table(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -262,6 +267,7 @@ fn benchmark_execution(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -351,6 +357,7 @@ fn benchmark_eviction(allocator: std.mem.Allocator, io: std.Io) !void {
 
     // Small buffer pool to force eviction
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var empty_page = std.mem.zeroes(@import("storage/page/page.zig").Page);
@@ -405,6 +412,7 @@ fn benchmark_secondary_index(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;
@@ -467,6 +475,7 @@ fn benchmark_scan_resistance(allocator: std.mem.Allocator, io: std.Io) !void {
 
     // pool_size is 4096. 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var empty_page = std.mem.zeroes(@import("storage/page/page.zig").Page);
@@ -513,6 +522,7 @@ fn benchmark_mvcc(allocator: std.mem.Allocator, io: std.Io) !void {
     defer storage_mgr.deinit();
 
     var buffer_mgr = try bm.BufferManager.init(allocator, &storage_mgr);
+    try buffer_mgr.start();
     defer buffer_mgr.deinit();
 
     var next_page_counter: u32 = 1;

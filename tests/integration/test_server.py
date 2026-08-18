@@ -124,5 +124,25 @@ class TestSimpleDBServer(unittest.TestCase):
         s1.close()
         s2.close()
 
+    def test_06_hash_join(self):
+        resp = self.send_query("CREATE TABLE orders (order_id INT, user_id INT, item VARCHAR);")
+        self.assertIn("OK", resp)
+        
+        # Insert enough rows to make HashJoin cheaper than NLJ (N=10)
+        for i in range(10):
+            self.send_query(f"INSERT INTO users VALUES ({10+i}, 'TestUser{i}');")
+            self.send_query(f"INSERT INTO orders VALUES ({200+i}, {10+i}, 'Item{i}');")
+        
+        # Test EXPLAIN to verify HashJoin is used
+        resp = self.send_query("EXPLAIN SELECT * FROM users JOIN orders ON id = user_id;")
+        self.assertIn("HashJoin", resp)
+        
+        # Test actual execution
+        resp = self.send_query("SELECT * FROM users JOIN orders ON id = user_id;")
+        self.assertIn("Item5", resp)
+        self.assertIn("Item9", resp)
+        self.assertIn("TestUser5", resp)
+        self.assertIn("TestUser9", resp)
+
 if __name__ == '__main__':
     unittest.main()

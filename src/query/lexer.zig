@@ -152,6 +152,13 @@ pub const Lexer = struct {
             while (self.pos < self.input.len and is_digit(self.input[self.pos])) {
                 self.pos += 1;
             }
+            // Support for floating point numbers
+            if (self.pos < self.input.len and self.input[self.pos] == '.') {
+                self.pos += 1;
+                while (self.pos < self.input.len and is_digit(self.input[self.pos])) {
+                    self.pos += 1;
+                }
+            }
             return .{ .token_type = .Number, .text = self.input[start..self.pos] };
         }
 

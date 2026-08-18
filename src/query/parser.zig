@@ -245,8 +245,13 @@ pub const Parser = struct {
         
         while (self.current_token.token_type != .RParen) {
             if (self.current_token.token_type == .Number) {
-                const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
-                try values.append(self.allocator, .{ .int = val });
+                if (std.mem.indexOfScalar(u8, self.current_token.text, '.') != null) {
+                    const val = std.fmt.parseFloat(f64, self.current_token.text) catch return error.InvalidNumber;
+                    try values.append(self.allocator, .{ .float = val });
+                } else {
+                    const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
+                    try values.append(self.allocator, .{ .int = val });
+                }
                 self.advance();
             } else if (self.current_token.token_type == .String) {
                 try values.append(self.allocator, .{ .varchar = self.current_token.text });
@@ -453,8 +458,13 @@ pub const Parser = struct {
             value = .{ .varchar = self.current_token.text };
             self.advance();
         } else if (self.current_token.token_type == .Number) {
-            const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
-            value = .{ .int = val };
+            if (std.mem.indexOfScalar(u8, self.current_token.text, '.') != null) {
+                const val = std.fmt.parseFloat(f64, self.current_token.text) catch return error.InvalidNumber;
+                value = .{ .float = val };
+            } else {
+                const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
+                value = .{ .int = val };
+            }
             self.advance();
         } else if (self.current_token.token_type == .Identifier) {
             if (std.mem.eql(u8, self.current_token.text, "true") or std.mem.eql(u8, self.current_token.text, "TRUE")) {
@@ -528,9 +538,15 @@ pub const Parser = struct {
 
         // Parse value: number, string, or bool literal
         const value: ast.Value = if (self.current_token.token_type == .Number) blk: {
-            const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
-            self.advance();
-            break :blk .{ .int = val };
+            if (std.mem.indexOfScalar(u8, self.current_token.text, '.') != null) {
+                const val = std.fmt.parseFloat(f64, self.current_token.text) catch return error.InvalidNumber;
+                self.advance();
+                break :blk .{ .float = val };
+            } else {
+                const val = std.fmt.parseInt(u64, self.current_token.text, 10) catch return error.InvalidNumber;
+                self.advance();
+                break :blk .{ .int = val };
+            }
         } else if (self.current_token.token_type == .String) blk: {
             const val = self.current_token.text;
             self.advance();

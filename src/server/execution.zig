@@ -233,6 +233,7 @@ pub fn execute_statement(
                 var right_seq_exec: exec.SeqScanExecutor = undefined;
                 var join_exec: exec.NestedLoopJoinExecutor = undefined;
                 var sort_merge_join_exec: exec.SortMergeJoinExecutor = undefined;
+                var hash_join_exec: exec.HashJoinExecutor = undefined;
                 
                 var current_schema = table.schema;
                 var combined_schema_buf: [128]ast.ColumnDef = undefined;
@@ -251,7 +252,7 @@ pub fn execute_statement(
                         
                         const cond = s.join_condition orelse return error.MissingCondition;
                         
-                        var use_sort_merge_join = false;
+                        var use_optimized_join = false;
                         if (cond == .column_compare and cond.column_compare.op == .eq) {
                             const cmp = cond.column_compare;
                             var left_col_idx: ?usize = null;
@@ -278,9 +279,22 @@ pub fn execute_statement(
                                 const n_right_log = if (N_right > 1) N_right * std.math.log2_int(u64, N_right) else 0;
                                 const cost_smj = n_left_log + n_right_log + N_left + N_right;
 
-                                // We prefer SortMergeJoin if its cost is strictly less than NLJ, 
-                                // or if costs are equal and data is large enough to benefit from SMJ structure.
-                                if (cost_smj <= cost_nlj) {
+                                // HashJoin cost = N_left + N_right (hash build and probe)
+                                // We add a constant overhead factor to represent hashing costs
+                                const cost_hj = (N_left + N_right) * 2;
+
+                                // Pick the cheapest join strategy
+                                if (cost_hj <= cost_smj and cost_hj <= cost_nlj) {
+                                    hash_join_exec = exec.HashJoinExecutor{
+                                        .left_child = &left_executor_copy,
+                                        .right_child = &right_executor,
+                                        .left_join_col_idx = left_col_idx.?,
+                                        .right_join_col_idx = right_col_idx.?,
+                                        .allocator = allocator,
+                                    };
+                                    base_executor = .{ .hash_join = &hash_join_exec };
+                                    use_optimized_join = true;
+                                } else if (cost_smj <= cost_nlj) {
                                     sort_merge_join_exec = exec.SortMergeJoinExecutor{
                                         .left_child = &left_executor_copy,
                                         .right_child = &right_executor,
@@ -289,12 +303,12 @@ pub fn execute_statement(
                                         .allocator = allocator,
                                     };
                                     base_executor = .{ .sort_merge_join = &sort_merge_join_exec };
-                                    use_sort_merge_join = true;
+                                    use_optimized_join = true;
                                 }
                             }
                         }
                         
-                        if (!use_sort_merge_join) {
+                        if (!use_optimized_join) {
                             join_exec = exec.NestedLoopJoinExecutor{
                                 .left_child = &left_executor_copy,
                                 .right_child = &right_executor,

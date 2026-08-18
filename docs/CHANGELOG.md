@@ -5,6 +5,8 @@ All notable changes to the SimpleDB project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Hash Join**: Integrated `HashJoinExecutor` into the Cost-Based Optimizer, which automatically selects an `O(N+M)` hash join instead of Sort-Merge or Nested Loop joins for larger datasets based on statistics heuristics.
+- **Float Literals**: Lexer and Parser upgraded to correctly ingest floating-point decimals natively instead of truncating them as integers, preventing `@bitCast` errors in storage serialization.
 - **Extended Data Types**: Expanded schema support to include `Float` (f64), `Timestamp` (i64), `JSON` (String), `UUID` (16 bytes), and `Signed Integer` (i64) data types.
 - **Advanced Query Features**: Added Aggregation support (`COUNT`, `SUM`, `MIN`, `MAX`, `AVG`) with `GROUP BY` using in-memory hash aggregation, as well as `Sort-Merge Join` logic.
 - **CLI / REPL Shell**: Built a robust native command-line interface via `--cli`. Supports multi-line input and provides direct terminal-based interaction.

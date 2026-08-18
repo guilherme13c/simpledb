@@ -27,9 +27,11 @@ The query pipeline executes in three main stages:
    Mutating statements automatically serialize the exact original SQL text to the Write-Ahead Log (WAL), meaning that `simpledb.wal` now persists operations completely logically in plain SQL!
 
 ## Supported SQL Syntax
-- `CREATE TABLE <table_name>;`
-- `DROP TABLE <table_name>;`
-- `INSERT INTO <table_name> VALUES (<key>, '<value>');`
-- `DELETE FROM <table_name> WHERE key = <key>;`
-- `SELECT * FROM <table_name> WHERE key = <key>;`
-- `SELECT * FROM <table_name> WHERE key >= <start_key> AND key <= <end_key>;`
+- **DDL**: `CREATE TABLE`, `DROP TABLE`, `CREATE INDEX`, `ALTER TABLE ... ADD COLUMN`, `ALTER TABLE ... RENAME COLUMN TO`
+- **DML**: `INSERT INTO ... VALUES (...)`, `UPDATE ... SET ... WHERE ...`, `DELETE FROM ... WHERE ...`
+- **DQL**: `SELECT ... FROM ... WHERE ...`
+- **Joins**: `JOIN ... ON ...` (Optimized internally using Hash Join or Sort-Merge Join)
+- **Aggregations**: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` combined with `GROUP BY`
+- **Sorting & Limits**: `ORDER BY ... ASC/DESC`, `LIMIT`, `OFFSET`
+- **Transactions**: `BEGIN`, `COMMIT`, `ROLLBACK`
+- **Data Types**: `INT`, `VARCHAR`, `FLOAT`, `BOOL`, `TIMESTAMP`, `JSON`, `UUID`, `SIGNED_INT`

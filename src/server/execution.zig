@@ -6,6 +6,69 @@ const undo = @import("undo.zig");
 const transaction = @import("../storage/wal/transaction.zig");
 
 /// Executes a parsed SQL statement.
+pub fn extract_schema(allocator: std.mem.Allocator, catalog: *Catalog, stmt: ast.Statement) ![]const ast.ColumnDef {
+    if (stmt != .select) return error.NotSelect;
+    const s = stmt.select;
+    
+    if (catalog.get_temp_table(s.table_name)) |table| {
+        return table.schema;
+    }
+    if (catalog.get_table(s.table_name)) |table| {
+        if (s.columns) |cols| {
+            var schema = try allocator.alloc(ast.ColumnDef, cols.len);
+            for (cols, 0..) |col_name, i| {
+                for (table.schema) |table_col| {
+                    if (std.mem.eql(u8, col_name, table_col.name)) {
+                        schema[i] = table_col;
+                        break;
+                    }
+                }
+            }
+            return schema;
+        } else {
+            var schema = try allocator.alloc(ast.ColumnDef, table.schema.len);
+            for (table.schema, 0..) |table_col, i| {
+                schema[i] = table_col;
+            }
+            return schema;
+        }
+    }
+    return error.TableNotFound;
+}
+
+pub fn resolve_subqueries(
+    allocator: std.mem.Allocator,
+    catalog: *Catalog,
+    txn_ctx: ?*transaction.TransactionContext,
+    expr: *ast.Expression,
+) anyerror!void {
+    switch (expr.*) {
+        .compare => {},
+        .column_compare => {},
+        .and_expr => |*a| {
+            const left = @constCast(a.left);
+            const right = @constCast(a.right);
+            try resolve_subqueries(allocator, catalog, txn_ctx, left);
+            try resolve_subqueries(allocator, catalog, txn_ctx, right);
+        },
+        .compare_subquery => |c| {
+            var out_tuple: []ast.Value = undefined;
+            try execute_statement_internal(allocator, catalog, c.subquery.*, txn_ctx, null, null, &out_tuple, null);
+            defer exec.free_tuple(allocator, out_tuple);
+            
+            if (out_tuple.len == 0) return error.SubqueryEmpty;
+            
+            expr.* = .{
+                .compare = .{
+                    .column = c.column,
+                    .op = c.op,
+                    .value = try exec.dupe_value(allocator, out_tuple[0]),
+                }
+            };
+        }
+    }
+}
+
 pub fn execute_statement(
     allocator: std.mem.Allocator,
     catalog: *Catalog,
@@ -13,6 +76,19 @@ pub fn execute_statement(
     txn_ctx: ?*transaction.TransactionContext,
     writer: anytype,
     undo_stack: ?*std.ArrayList(undo.UndoOp),
+) !void {
+    return execute_statement_internal(allocator, catalog, parsed_stmt, txn_ctx, writer, undo_stack, null, null);
+}
+
+fn execute_statement_internal(
+    allocator: std.mem.Allocator,
+    catalog: *Catalog,
+    parsed_stmt: ast.Statement,
+    txn_ctx: ?*transaction.TransactionContext,
+    writer: anytype,
+    undo_stack: ?*std.ArrayList(undo.UndoOp),
+    out_tuple: ?*[]ast.Value,
+    target_temp_table: ?[]const u8,
 ) !void {
     var stmt = parsed_stmt;
     var is_explain = false;
@@ -22,8 +98,26 @@ pub fn execute_statement(
         stmt = stmt.explain.*;
     }
 
+    if (stmt == .select and stmt.select.condition != null) {
+        var cond = stmt.select.condition.?;
+        try resolve_subqueries(allocator, catalog, txn_ctx, &cond);
+        stmt.select.condition = cond;
+    }
+
     switch (stmt) {
         .explain => return,
+        .with => |w| {
+            for (w.ctes) |cte| {
+                const schema = try extract_schema(allocator, catalog, cte.statement.*);
+                try catalog.create_temp_table(cte.name, schema);
+                allocator.free(schema);
+                try execute_statement_internal(allocator, catalog, cte.statement.*, txn_ctx, null, null, null, cte.name);
+            }
+            try execute_statement_internal(allocator, catalog, w.statement.*, txn_ctx, writer, undo_stack, out_tuple, target_temp_table);
+            for (w.ctes) |cte| {
+                try catalog.drop_temp_table(cte.name);
+            }
+        },
         .create_table => |c| {
             try catalog.create_table(c.table_name, c.columns);
         },
@@ -168,20 +262,43 @@ pub fn execute_statement(
         },
         .begin, .commit, .rollback => {},
         .select => |s| {
-            if (catalog.get_table(s.table_name)) |table| {
-                var base_executor: exec.Executor = undefined;
-                var seq_exec: exec.SeqScanExecutor = undefined;
-                var index_exec: exec.IndexScanExecutor = undefined;
-                var filter_exec: exec.FilterExecutor = undefined;
+            var base_executor: exec.Executor = undefined;
+            var seq_exec: exec.SeqScanExecutor = undefined;
+            var mem_exec: exec.InMemoryScanExecutor = undefined;
+            var index_exec: exec.IndexScanExecutor = undefined;
+            var filter_exec: exec.FilterExecutor = undefined;
+            
+            var table_schema: []const ast.ColumnDef = undefined;
+            var num_left_tuples: u64 = 0;
 
+            if (catalog.get_temp_table(s.table_name)) |temp_table| {
+                mem_exec = exec.InMemoryScanExecutor{
+                    .table = temp_table,
+                    .allocator = allocator,
+                };
+                base_executor = .{ .in_memory_scan = &mem_exec };
+                table_schema = temp_table.schema;
+                num_left_tuples = temp_table.tuples.items.len;
+                
+                if (s.condition) |expr| {
+                    filter_exec = exec.FilterExecutor{
+                        .child = base_executor,
+                        .expression = expr,
+                        .schema = temp_table.schema,
+                        .allocator = allocator,
+                    };
+                    base_executor = .{ .filter = &filter_exec };
+                }
+            } else if (catalog.get_table(s.table_name)) |table| {
+                table_schema = table.schema;
+                num_left_tuples = num_left_tuples;
+                
                 if (s.condition) |expr| {
                     if (exec.try_extract_index_condition(expr, table)) |extracted| {
-                        const N = table.num_tuples.load(.monotonic);
+                        const N = num_left_tuples;
                         // CBO Cost Model
-                        // SeqScan requires iterating over all tuples.
-                        // IndexScan requires descending the BTree (cost ~3) plus looking up matching heap tuples (cost ~1 for eq).
                         const cost_seq = N;
-                        const cost_idx = 4; // Flat cost estimate for point lookup
+                        const cost_idx = 4;
                         
                         if (cost_idx <= cost_seq) {
                             index_exec = exec.IndexScanExecutor{
@@ -193,7 +310,6 @@ pub fn execute_statement(
                             };
                             base_executor = .{ .index_scan = &index_exec };
                         } else {
-                            // Fallback to SeqScan if table is tiny (SeqScan is better for cache locality on tiny data)
                             seq_exec = exec.SeqScanExecutor{
                                 .table = table,
                                 .txn_ctx = txn_ctx,
@@ -229,13 +345,15 @@ pub fn execute_statement(
                     };
                     base_executor = .{ .seq_scan = &seq_exec };
                 }
-
-                var right_seq_exec: exec.SeqScanExecutor = undefined;
+            } else {
+                return error.TableNotFound;
+            }
+var right_seq_exec: exec.SeqScanExecutor = undefined;
                 var join_exec: exec.NestedLoopJoinExecutor = undefined;
                 var sort_merge_join_exec: exec.SortMergeJoinExecutor = undefined;
                 var hash_join_exec: exec.HashJoinExecutor = undefined;
                 
-                var current_schema = table.schema;
+                var current_schema = table_schema;
                 var combined_schema_buf: [128]ast.ColumnDef = undefined;
                 
                 var left_executor_copy = base_executor;
@@ -258,16 +376,16 @@ pub fn execute_statement(
                             var left_col_idx: ?usize = null;
                             var right_col_idx: ?usize = null;
                             
-                            if (exec.resolve_column(table.schema, cmp.left_column)) |idx| {
+                            if (exec.resolve_column(table_schema, cmp.left_column)) |idx| {
                                 left_col_idx = idx;
                                 right_col_idx = exec.resolve_column(right_table.schema, cmp.right_column);
-                            } else if (exec.resolve_column(table.schema, cmp.right_column)) |idx| {
+                            } else if (exec.resolve_column(table_schema, cmp.right_column)) |idx| {
                                 left_col_idx = idx;
                                 right_col_idx = exec.resolve_column(right_table.schema, cmp.left_column);
                             }
                             
                             if (left_col_idx != null and right_col_idx != null) {
-                                const N_left = table.num_tuples.load(.monotonic);
+                                const N_left = num_left_tuples;
                                 const N_right = right_table.num_tuples.load(.monotonic);
 
                                 // CBO Cost Model
@@ -284,46 +402,49 @@ pub fn execute_statement(
                                 const cost_hj = (N_left + N_right) * 2;
 
                                 // Pick the cheapest join strategy
-                                if (cost_hj <= cost_smj and cost_hj <= cost_nlj) {
-                                    hash_join_exec = exec.HashJoinExecutor{
-                                        .left_child = &left_executor_copy,
-                                        .right_child = &right_executor,
-                                        .left_join_col_idx = left_col_idx.?,
-                                        .right_join_col_idx = right_col_idx.?,
-                                        .allocator = allocator,
-                                    };
-                                    base_executor = .{ .hash_join = &hash_join_exec };
-                                    use_optimized_join = true;
-                                } else if (cost_smj <= cost_nlj) {
-                                    sort_merge_join_exec = exec.SortMergeJoinExecutor{
-                                        .left_child = &left_executor_copy,
-                                        .right_child = &right_executor,
-                                        .left_join_col_idx = left_col_idx.?,
-                                        .right_join_col_idx = right_col_idx.?,
-                                        .allocator = allocator,
-                                    };
-                                    base_executor = .{ .sort_merge_join = &sort_merge_join_exec };
-                                    use_optimized_join = true;
+                                if (s.join_type == .inner) {
+                                    if (cost_hj <= cost_smj and cost_hj <= cost_nlj) {
+                                        hash_join_exec = exec.HashJoinExecutor{
+                                            .left_child = &left_executor_copy,
+                                            .right_child = &right_executor,
+                                            .left_join_col_idx = left_col_idx.?,
+                                            .right_join_col_idx = right_col_idx.?,
+                                            .allocator = allocator,
+                                        };
+                                        base_executor = .{ .hash_join = &hash_join_exec };
+                                        use_optimized_join = true;
+                                    } else if (cost_smj <= cost_nlj) {
+                                        sort_merge_join_exec = exec.SortMergeJoinExecutor{
+                                            .left_child = &left_executor_copy,
+                                            .right_child = &right_executor,
+                                            .left_join_col_idx = left_col_idx.?,
+                                            .right_join_col_idx = right_col_idx.?,
+                                            .allocator = allocator,
+                                        };
+                                        base_executor = .{ .sort_merge_join = &sort_merge_join_exec };
+                                        use_optimized_join = true;
+                                    }
                                 }
-                            }
                         }
                         
+                            }
                         if (!use_optimized_join) {
                             join_exec = exec.NestedLoopJoinExecutor{
                                 .left_child = &left_executor_copy,
                                 .right_child = &right_executor,
                                 .join_condition = cond,
-                                .left_schema = table.schema,
+                                .join_type = s.join_type,
+                                .left_schema = table_schema,
                                 .right_schema = right_table.schema,
                                 .allocator = allocator,
                             };
                             base_executor = .{ .nested_loop_join = &join_exec };
                         }
 
-                        std.debug.assert(table.schema.len + right_table.schema.len <= 128);
-                        @memcpy(combined_schema_buf[0..table.schema.len], table.schema);
-                        @memcpy(combined_schema_buf[table.schema.len..table.schema.len + right_table.schema.len], right_table.schema);
-                        current_schema = combined_schema_buf[0 .. table.schema.len + right_table.schema.len];
+                        std.debug.assert(table_schema.len + right_table.schema.len <= 128);
+                        @memcpy(combined_schema_buf[0..table_schema.len], table_schema);
+                        @memcpy(combined_schema_buf[table_schema.len..table_schema.len + right_table.schema.len], right_table.schema);
+                        current_schema = combined_schema_buf[0 .. table_schema.len + right_table.schema.len];
                     } else {
                         return error.TableNotFound;
                     }
@@ -405,13 +526,21 @@ pub fn execute_statement(
 
                 while (try final_executor.next()) |tuple| {
                     defer exec.free_tuple(allocator, tuple);
+                    if (target_temp_table) |target_name| {
+                        if (catalog.get_temp_table(target_name)) |temp_table| {
+                            try temp_table.insert_tuple(tuple);
+                        }
+                        continue;
+                    }
+                    if (out_tuple) |out| {
+                        out.* = try allocator.alloc(ast.Value, tuple.len);
+                        for (tuple, 0..) |v, i| out.*[i] = try exec.dupe_value(allocator, v);
+                        break;
+                    }
                     if (@TypeOf(writer) != @TypeOf(null)) {
                         try exec.format_tuple(writer, tuple);
                     }
                 }
-            } else {
-                return error.TableNotFound;
-            }
         },
     }
 }

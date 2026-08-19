@@ -46,6 +46,7 @@ pub const Parser = struct {
             .KeywordSelect => return self.parse_select(),
             .KeywordDelete => return self.parse_delete(),
             .KeywordUpdate => return self.parse_update(),
+            .KeywordWith => return self.parse_with(),
             .KeywordBegin => {
                 self.advance();
                 if (self.current_token.token_type == .Semicolon) self.advance();
@@ -286,7 +287,7 @@ pub const Parser = struct {
         return .{ .insert = .{ .table_name = table_name, .values = try values.toOwnedSlice(self.allocator) } };
     }
 
-    fn parse_select(self: *Parser) !ast.Statement {
+    pub fn parse_select(self: *Parser) anyerror!ast.Statement {
         try self.match(.KeywordSelect);
         var columns: ?[]const []const u8 = null;
         var aggregates: ?[]const ast.AggregateExpr = null;
@@ -350,8 +351,33 @@ pub const Parser = struct {
 
         var join_table: ?[]const u8 = null;
         var join_condition: ?ast.Expression = null;
-        if (self.current_token.token_type == .KeywordJoin) {
+        var join_type: ast.JoinType = .inner;
+
+        var has_join = false;
+        if (self.current_token.token_type == .KeywordLeft) {
             self.advance();
+            if (self.current_token.token_type == .KeywordOuter) self.advance();
+            join_type = .left;
+            try self.match(.KeywordJoin);
+            has_join = true;
+        } else if (self.current_token.token_type == .KeywordRight) {
+            self.advance();
+            if (self.current_token.token_type == .KeywordOuter) self.advance();
+            join_type = .right;
+            try self.match(.KeywordJoin);
+            has_join = true;
+        } else if (self.current_token.token_type == .KeywordFull) {
+            self.advance();
+            if (self.current_token.token_type == .KeywordOuter) self.advance();
+            join_type = .full;
+            try self.match(.KeywordJoin);
+            has_join = true;
+        } else if (self.current_token.token_type == .KeywordJoin) {
+            self.advance();
+            has_join = true;
+        }
+
+        if (has_join) {
             if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
             join_table = self.current_token.text;
             self.advance();
@@ -414,7 +440,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        return .{ .select = .{ .columns = columns, .aggregates = aggregates, .table_name = table_name, .join_table = join_table, .join_condition = join_condition, .condition = condition, .group_by = group_by, .order_by = order_by, .is_desc = is_desc, .limit = limit, .offset = offset } };
+        return .{ .select = .{ .columns = columns, .aggregates = aggregates, .table_name = table_name, .join_type = join_type, .join_table = join_table, .join_condition = join_condition, .condition = condition, .group_by = group_by, .order_by = order_by, .is_desc = is_desc, .limit = limit, .offset = offset } };
     }
 
     fn parse_delete(self: *Parser) !ast.Statement {
@@ -493,7 +519,54 @@ pub const Parser = struct {
         return .{ .update = .{ .table_name = table_name, .column_name = column_name, .value = value, .condition = condition } };
     }
 
-    fn parse_expression(self: *Parser) !ast.Expression {
+
+    pub fn parse_with(self: *Parser) !ast.Statement {
+        self.advance(); // consume WITH
+        
+        var ctes = std.ArrayList(ast.Cte).empty;
+        
+        while (true) {
+            if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+            const cte_name = self.current_token.text;
+            self.advance();
+            
+            if (self.current_token.token_type != .KeywordAs) return error.UnexpectedToken;
+            self.advance();
+            
+            if (self.current_token.token_type != .LParen) return error.UnexpectedToken;
+            self.advance();
+            
+            const cte_stmt = try self.parse_statement();
+            
+            if (self.current_token.token_type != .RParen) return error.UnexpectedToken;
+            self.advance();
+            
+            const stmt_ptr = try self.allocator.create(ast.Statement);
+            stmt_ptr.* = cte_stmt;
+            
+            try ctes.append(self.allocator, .{
+                .name = cte_name,
+                .statement = stmt_ptr,
+            });
+            
+            if (self.current_token.token_type == .Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        
+        const main_stmt = try self.parse_statement();
+        const main_ptr = try self.allocator.create(ast.Statement);
+        main_ptr.* = main_stmt;
+        
+        return .{ .with = .{
+            .ctes = try ctes.toOwnedSlice(self.allocator),
+            .statement = main_ptr,
+        } };
+    }
+
+    pub fn parse_expression(self: *Parser) anyerror!ast.Expression {
         const left = try self.parse_compare();
 
         if (self.current_token.token_type == .KeywordAnd) {
@@ -511,7 +584,7 @@ pub const Parser = struct {
         return left;
     }
 
-    fn parse_compare(self: *Parser) !ast.Expression {
+    fn parse_compare(self: *Parser) anyerror!ast.Expression {
         if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
         const column = self.current_token.text;
         self.advance();
@@ -534,6 +607,18 @@ pub const Parser = struct {
             const right_column = self.current_token.text;
             self.advance();
             return .{ .column_compare = .{ .left_column = column, .op = op, .right_column = right_column } };
+        }
+
+        // Check for scalar subquery
+        if (self.current_token.token_type == .LParen) {
+            self.advance();
+            if (self.current_token.token_type == .KeywordSelect) {
+                const sub_stmt = try self.allocator.create(ast.Statement);
+                sub_stmt.* = try self.parse_select();
+                try self.match(.RParen);
+                return .{ .compare_subquery = .{ .column = column, .op = op, .subquery = sub_stmt } };
+            }
+            return error.UnexpectedToken;
         }
 
         // Parse value: number, string, or bool literal

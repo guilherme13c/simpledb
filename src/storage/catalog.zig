@@ -23,6 +23,7 @@ pub const Catalog = struct {
     buffer_manager: *BufferManager,
     next_page_counter: *u32,
     tables: std.StringHashMap(*Table),
+    in_memory_tables: std.StringHashMap(*@import("in_memory_table.zig").InMemoryTable),
     mutex: SpinLock,
 
     pub fn init(allocator: std.mem.Allocator, buffer_manager: *BufferManager, next_page_counter: *u32) !Catalog {
@@ -31,6 +32,7 @@ pub const Catalog = struct {
             .buffer_manager = buffer_manager,
             .next_page_counter = next_page_counter,
             .tables = std.StringHashMap(*Table).init(allocator),
+            .in_memory_tables = std.StringHashMap(*@import("in_memory_table.zig").InMemoryTable).init(allocator),
             .mutex = .{},
         };
 
@@ -383,6 +385,36 @@ pub const Catalog = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tables.get(name);
+    }
+
+    pub fn get_temp_table(self: *Catalog, name: []const u8) ?*@import("in_memory_table.zig").InMemoryTable {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.in_memory_tables.get(name);
+    }
+
+    pub fn create_temp_table(self: *Catalog, name: []const u8, schema: []const ast.ColumnDef) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.in_memory_tables.contains(name) or self.tables.contains(name)) return error.TableAlreadyExists;
+
+        const table = try self.allocator.create(@import("in_memory_table.zig").InMemoryTable);
+        table.* = try @import("in_memory_table.zig").InMemoryTable.init(self.allocator, schema);
+        
+        const name_dup = try self.allocator.dupe(u8, name);
+        try self.in_memory_tables.put(name_dup, table);
+    }
+
+    pub fn drop_temp_table(self: *Catalog, name: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.in_memory_tables.fetchRemove(name)) |kv| {
+            self.allocator.free(kv.key);
+            kv.value.deinit();
+            self.allocator.destroy(kv.value);
+        }
     }
 
     pub fn drop_table(self: *Catalog, name: []const u8) !void {

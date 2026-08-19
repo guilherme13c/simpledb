@@ -253,6 +253,7 @@ pub const Table = struct {
                 .json => |s| total_size += 4 + s.len,
                 .uuid => total_size += 16,
                 .signed_int => total_size += 8,
+                .null_val => return error.NullsNotSupported,
             }
         }
         var buf = try allocator.alloc(u8, total_size);
@@ -267,6 +268,7 @@ pub const Table = struct {
                     buf[offset] = if (b) 1 else 0;
                     offset += 1;
                 },
+                .null_val => return error.NullsNotSupported,
                 .varchar => |s| {
                     std.mem.writeInt(u32, buf[offset..offset+4][0..4], @intCast(s.len), .little);
                     offset += 4;

@@ -25,6 +25,7 @@ pub const ValueType = enum {
     json,
     uuid,
     signed_int,
+    null_val,
 };
 
 pub const Value = union(ValueType) {
@@ -36,6 +37,14 @@ pub const Value = union(ValueType) {
     json: []const u8,
     uuid: [16]u8,
     signed_int: i64,
+    null_val: void,
+};
+
+pub const JoinType = enum {
+    inner,
+    left,
+    right,
+    full,
 };
 
 pub const ConditionType = enum {
@@ -62,6 +71,7 @@ pub const ExpressionType = enum {
     compare,
     column_compare,
     and_expr,
+    compare_subquery,
 };
 
 /// General expression for WHERE clauses. Can reference any column by name.
@@ -79,6 +89,11 @@ pub const Expression = union(ExpressionType) {
     and_expr: struct {
         left: *const Expression,
         right: *const Expression,
+    },
+    compare_subquery: struct {
+        column: []const u8,
+        op: CompareOp,
+        subquery: *Statement,
     },
 };
 
@@ -101,6 +116,11 @@ pub const AlterAction = union(AlterActionType) {
     rename_column: struct { old_name: []const u8, new_name: []const u8 },
 };
 
+pub const Cte = struct {
+    name: []const u8,
+    statement: *Statement,
+};
+
 pub const StatementType = enum {
     create_table,
     create_index,
@@ -114,6 +134,7 @@ pub const StatementType = enum {
     commit,
     rollback,
     explain,
+    with,
 };
 
 pub const Statement = union(StatementType) {
@@ -126,6 +147,7 @@ pub const Statement = union(StatementType) {
         columns: ?[]const []const u8, // null means '*'
         aggregates: ?[]const AggregateExpr,
         table_name: []const u8, 
+        join_type: JoinType,
         join_table: ?[]const u8,
         join_condition: ?Expression,
         condition: ?Expression,
@@ -149,4 +171,8 @@ pub const Statement = union(StatementType) {
     commit: void,
     rollback: void,
     explain: *Statement,
+    with: struct {
+        ctes: []const Cte,
+        statement: *Statement,
+    },
 };

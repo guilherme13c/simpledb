@@ -9,6 +9,7 @@ const TransactionContext = @import("../storage/wal/transaction.zig").Transaction
 pub fn dupe_value(allocator: std.mem.Allocator, val: ast.Value) !ast.Value {
     return switch (val) {
         .int => |v| .{ .int = v },
+        .null_val => .{ .null_val = {} },
         .bool => |v| .{ .bool = v },
         .varchar => |v| .{ .varchar = try allocator.dupe(u8, v) },
         .float => |v| .{ .float = v },
@@ -32,6 +33,7 @@ pub fn format_tuple(writer: anytype, tuple: []const ast.Value) !void {
         if (idx > 0) try writer.writeAll(" | ");
         switch (v) {
             .int => |val| try writer.print("{d}", .{val}),
+            .null_val => try writer.print("NULL", .{}),
             .bool => |val| try writer.print("{}", .{val}),
             .varchar => |val| try writer.print("{s}", .{val}),
             .float => |val| try writer.print("{d}", .{val}),
@@ -74,6 +76,8 @@ pub const Executor = union(enum) {
     update: *UpdateExecutor,
     order_by: *OrderByExecutor,
     limit: *LimitExecutor,
+    in_memory_scan: *InMemoryScanExecutor,
+    in_memory_insert: *InMemoryInsertExecutor,
 
     /// Initializes the execution plan.
     pub fn open(self: *Executor) anyerror!void {
@@ -91,6 +95,8 @@ pub const Executor = union(enum) {
             .update => |e| try e.open(),
             .order_by => |e| try e.open(),
             .limit => |e| try e.open(),
+            .in_memory_scan => |e| try e.open(),
+            .in_memory_insert => |e| try e.open(),
         }
     }
 
@@ -110,6 +116,8 @@ pub const Executor = union(enum) {
             .update => |e| return try e.next(),
             .order_by => |e| return try e.next(),
             .limit => |e| return try e.next(),
+            .in_memory_scan => |e| return try e.next(),
+            .in_memory_insert => |e| return try e.next(),
         }
     }
     /// Closes the execution plan and frees associated resources.
@@ -128,6 +136,8 @@ pub const Executor = union(enum) {
             .update => |e| e.close(),
             .order_by => |e| e.close(),
             .limit => |e| e.close(),
+            .in_memory_scan => |e| e.close(),
+            .in_memory_insert => |e| e.close(),
         }
     }
 
@@ -181,6 +191,11 @@ pub const Executor = union(enum) {
                 try writer.print("{s}-> Limit\n", .{indent});
                 try e.child.explain(writer, depth + 1);
             },
+            .in_memory_scan => try writer.print("{s}-> InMemoryScan\n", .{indent}),
+            .in_memory_insert => |e| {
+                try writer.print("{s}-> InMemoryInsert\n", .{indent});
+                try e.child.explain(writer, depth + 1);
+            },
             .hash_join => |e| {
                 try writer.print("{s}-> HashJoin\n", .{indent});
                 try e.left_child.explain(writer, depth + 1);
@@ -204,6 +219,8 @@ pub const DeleteExecutor = @import("executor/delete.zig").DeleteExecutor;
 pub const UpdateExecutor = @import("executor/update.zig").UpdateExecutor;
 pub const OrderByExecutor = @import("executor/order_by.zig").OrderByExecutor;
 pub const LimitExecutor = @import("executor/limit.zig").LimitExecutor;
+pub const InMemoryScanExecutor = @import("executor/in_memory_scan.zig").InMemoryScanExecutor;
+pub const InMemoryInsertExecutor = @import("executor/in_memory_insert.zig").InMemoryInsertExecutor;
 
 pub const ValueContext = struct {
     pub fn hash(self: @This(), key: ast.Value) u64 {
@@ -211,6 +228,7 @@ pub const ValueContext = struct {
         var hasher = std.hash.Wyhash.init(0);
         switch (key) {
             .int => |v| hasher.update(std.mem.asBytes(&v)),
+            .null_val => return 0,
             .bool => |v| hasher.update(std.mem.asBytes(&v)),
             .varchar => |v| hasher.update(v),
             .float => |v| hasher.update(std.mem.asBytes(&v)),
@@ -244,6 +262,7 @@ pub fn compare_values(lhs: ast.Value, op: ast.CompareOp, rhs: ast.Value) bool {
     if (@as(ast.ValueType, lhs) != @as(ast.ValueType, rhs)) return false;
 
     switch (lhs) {
+        .null_val => return false,
         .int => |a| {
             const b = rhs.int;
             return switch (op) {
@@ -334,6 +353,7 @@ pub fn compare_values(lhs: ast.Value, op: ast.CompareOp, rhs: ast.Value) bool {
 /// Evaluate an Expression against a tuple using the schema for column resolution.
 pub fn evaluate_expression(expr: ast.Expression, tuple: []const ast.Value, schema: []const ast.ColumnDef) bool {
     switch (expr) {
+        .compare_subquery => unreachable,
         .compare => |cmp| {
             const col_idx = resolve_column(schema, cmp.column) orelse return false;
             if (col_idx >= tuple.len) return false;
@@ -355,6 +375,7 @@ pub fn evaluate_join_expression(
     right_schema: []const ast.ColumnDef,
 ) ExecError!bool {
     switch (expr) {
+        .compare_subquery => unreachable,
         .compare => |cmp| {
             if (resolve_column(left_schema, cmp.column)) |idx| {
                 return compare_values(left_tuple[idx], cmp.op, cmp.value);
@@ -396,6 +417,7 @@ pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../sto
     if (table.schema.len == 0) return null;
 
     switch (expr) {
+        .compare_subquery => unreachable,
         .compare => |cmp| {
             if (cmp.op != .eq) return null;
 

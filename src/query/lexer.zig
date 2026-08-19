@@ -26,6 +26,8 @@ pub const TokenType = enum {
     KeywordCommit,
     KeywordRollback,
     KeywordExplain,
+    KeywordWith,
+    KeywordAs,
     KeywordInt,
     KeywordVarchar,
     KeywordBool,
@@ -46,6 +48,11 @@ pub const TokenType = enum {
     KeywordDesc,
     KeywordLimit,
     KeywordOffset,
+    KeywordLeft,
+    KeywordRight,
+    KeywordFull,
+    KeywordOuter,
+    KeywordNull,
     Identifier,
     Number,
     String,
@@ -195,6 +202,8 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "COMMIT")) return .{ .token_type = .KeywordCommit, .text = text };
             if (case_insensitive_eq(text, "ROLLBACK")) return .{ .token_type = .KeywordRollback, .text = text };
             if (case_insensitive_eq(text, "EXPLAIN")) return .{ .token_type = .KeywordExplain, .text = text };
+            if (case_insensitive_eq(text, "WITH")) return .{ .token_type = .KeywordWith, .text = text };
+            if (case_insensitive_eq(text, "AS")) return .{ .token_type = .KeywordAs, .text = text };
             if (case_insensitive_eq(text, "INT")) return .{ .token_type = .KeywordInt, .text = text };
             if (case_insensitive_eq(text, "VARCHAR")) return .{ .token_type = .KeywordVarchar, .text = text };
             if (case_insensitive_eq(text, "BOOL")) return .{ .token_type = .KeywordBool, .text = text };
@@ -215,6 +224,11 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "DESC")) return .{ .token_type = .KeywordDesc, .text = text };
             if (case_insensitive_eq(text, "LIMIT")) return .{ .token_type = .KeywordLimit, .text = text };
             if (case_insensitive_eq(text, "OFFSET")) return .{ .token_type = .KeywordOffset, .text = text };
+            if (case_insensitive_eq(text, "LEFT")) return .{ .token_type = .KeywordLeft, .text = text };
+            if (case_insensitive_eq(text, "RIGHT")) return .{ .token_type = .KeywordRight, .text = text };
+            if (case_insensitive_eq(text, "FULL")) return .{ .token_type = .KeywordFull, .text = text };
+            if (case_insensitive_eq(text, "OUTER")) return .{ .token_type = .KeywordOuter, .text = text };
+            if (case_insensitive_eq(text, "NULL")) return .{ .token_type = .KeywordNull, .text = text };
             
             return .{ .token_type = .Identifier, .text = text };
         }

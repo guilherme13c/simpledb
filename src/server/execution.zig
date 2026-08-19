@@ -291,7 +291,7 @@ fn execute_statement_internal(
                 }
             } else if (catalog.get_table(s.table_name)) |table| {
                 table_schema = table.schema;
-                num_left_tuples = num_left_tuples;
+                num_left_tuples = table.num_tuples.load(.monotonic);
                 
                 if (s.condition) |expr| {
                     if (exec.try_extract_index_condition(expr, table)) |extracted| {

@@ -450,6 +450,19 @@ var right_seq_exec: exec.SeqScanExecutor = undefined;
                     }
                 }
 
+
+                var win_exec: exec.WindowExecutor = undefined;
+                var win_base_exec_copy = base_executor;
+                if (s.window_functions) |wfs| {
+                    win_exec = exec.WindowExecutor{
+                        .child = &win_base_exec_copy,
+                        .window_functions = wfs,
+                        .input_schema = current_schema,
+                        .allocator = allocator,
+                    };
+                    base_executor = .{ .window = &win_exec };
+                }
+
                 var project_exec: exec.ProjectExecutor = undefined;
                 var agg_exec: exec.AggregateExecutor = undefined;
                 var final_executor: exec.Executor = base_executor;
@@ -477,9 +490,13 @@ var right_seq_exec: exec.SeqScanExecutor = undefined;
                     };
                     final_executor = .{ .aggregate = &agg_exec };
                 } else if (s.columns) |cols| {
-                    col_indices = try allocator.alloc(usize, cols.len);
+                    const num_win_funcs = if (s.window_functions) |wfs| wfs.len else 0;
+                    col_indices = try allocator.alloc(usize, cols.len + num_win_funcs);
                     for (cols, 0..) |col_name, i| {
                         col_indices.?[i] = exec.resolve_column(current_schema, col_name) orelse return error.ColumnNotFound;
+                    }
+                    for (0..num_win_funcs) |i| {
+                        col_indices.?[cols.len + i] = current_schema.len + i;
                     }
                     project_exec = exec.ProjectExecutor{
                         .child = base_executor,

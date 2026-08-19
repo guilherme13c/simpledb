@@ -956,7 +956,7 @@ test "Secondary Index" {
         .table_name = "users", 
         .columns = &[_][]const u8{"name"}, 
         .condition = cond,
-        .aggregates = null,
+        .aggregates = null, .window_functions = null,
         .join_type = .inner,
         .join_table = null,
         .join_condition = null,

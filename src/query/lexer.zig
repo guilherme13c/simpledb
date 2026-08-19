@@ -19,6 +19,10 @@ pub const TokenType = enum {
     KeywordAnd,
     KeywordDelete,
     KeywordUpdate,
+    KeywordOver,
+    KeywordPartition,
+    KeywordRowNumber,
+    KeywordRank,
     KeywordSet,
     KeywordJoin,
     KeywordOn,
@@ -195,6 +199,10 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "AND")) return .{ .token_type = .KeywordAnd, .text = text };
             if (case_insensitive_eq(text, "DELETE")) return .{ .token_type = .KeywordDelete, .text = text };
             if (case_insensitive_eq(text, "UPDATE")) return .{ .token_type = .KeywordUpdate, .text = text };
+            if (case_insensitive_eq(text, "OVER")) return .{ .token_type = .KeywordOver, .text = text };
+            if (case_insensitive_eq(text, "PARTITION")) return .{ .token_type = .KeywordPartition, .text = text };
+            if (case_insensitive_eq(text, "ROW_NUMBER")) return .{ .token_type = .KeywordRowNumber, .text = text };
+            if (case_insensitive_eq(text, "RANK")) return .{ .token_type = .KeywordRank, .text = text };
             if (case_insensitive_eq(text, "SET")) return .{ .token_type = .KeywordSet, .text = text };
             if (case_insensitive_eq(text, "JOIN")) return .{ .token_type = .KeywordJoin, .text = text };
             if (case_insensitive_eq(text, "ON")) return .{ .token_type = .KeywordOn, .text = text };

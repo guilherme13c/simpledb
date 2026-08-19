@@ -116,6 +116,22 @@ pub const AlterAction = union(AlterActionType) {
     rename_column: struct { old_name: []const u8, new_name: []const u8 },
 };
 
+
+pub const WindowFuncType = enum {
+    row_number,
+    rank,
+    sum,
+    count,
+};
+
+pub const WindowFunctionExpr = struct {
+    func: WindowFuncType,
+    arg_column: ?[]const u8,
+    partition_by: ?[]const u8,
+    order_by: ?[]const u8,
+    is_desc: bool,
+};
+
 pub const Cte = struct {
     name: []const u8,
     statement: *Statement,
@@ -146,6 +162,7 @@ pub const Statement = union(StatementType) {
     select: struct { 
         columns: ?[]const []const u8, // null means '*'
         aggregates: ?[]const AggregateExpr,
+        window_functions: ?[]const WindowFunctionExpr,
         table_name: []const u8, 
         join_type: JoinType,
         join_table: ?[]const u8,

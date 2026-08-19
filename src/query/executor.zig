@@ -78,6 +78,7 @@ pub const Executor = union(enum) {
     limit: *LimitExecutor,
     in_memory_scan: *InMemoryScanExecutor,
     in_memory_insert: *InMemoryInsertExecutor,
+    window: *WindowExecutor,
 
     /// Initializes the execution plan.
     pub fn open(self: *Executor) anyerror!void {
@@ -96,6 +97,7 @@ pub const Executor = union(enum) {
             .order_by => |e| try e.open(),
             .limit => |e| try e.open(),
             .in_memory_scan => |e| try e.open(),
+            .window => |e| try e.open(),
             .in_memory_insert => |e| try e.open(),
         }
     }
@@ -117,6 +119,7 @@ pub const Executor = union(enum) {
             .order_by => |e| return try e.next(),
             .limit => |e| return try e.next(),
             .in_memory_scan => |e| return try e.next(),
+            .window => |e| return try e.next(),
             .in_memory_insert => |e| return try e.next(),
         }
     }
@@ -137,6 +140,7 @@ pub const Executor = union(enum) {
             .order_by => |e| e.close(),
             .limit => |e| e.close(),
             .in_memory_scan => |e| e.close(),
+            .window => |e| e.close(),
             .in_memory_insert => |e| e.close(),
         }
     }
@@ -196,6 +200,7 @@ pub const Executor = union(enum) {
                 try writer.print("{s}-> InMemoryInsert\n", .{indent});
                 try e.child.explain(writer, depth + 1);
             },
+            .window => |e| try e.explain(writer, depth),
             .hash_join => |e| {
                 try writer.print("{s}-> HashJoin\n", .{indent});
                 try e.left_child.explain(writer, depth + 1);
@@ -213,6 +218,7 @@ pub const HashJoinExecutor = @import("executor/hash_join.zig").HashJoinExecutor;
 pub const SortMergeJoinExecutor = @import("executor/sort_merge_join.zig").SortMergeJoinExecutor;
 pub const ProjectExecutor = @import("executor/project.zig").ProjectExecutor;
 pub const AggregateExecutor = @import("executor/aggregate.zig").AggregateExecutor;
+pub const WindowExecutor = @import("executor/window.zig").WindowExecutor;
 pub const IndexScanExecutor = @import("executor/index_scan.zig").IndexScanExecutor;
 pub const InsertExecutor = @import("executor/insert.zig").InsertExecutor;
 pub const DeleteExecutor = @import("executor/delete.zig").DeleteExecutor;

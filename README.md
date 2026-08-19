@@ -5,6 +5,7 @@
 It explores fundamental, low-level database primitives by implementing its own storage abstractions instead of relying on external libraries or OS-level page caches. 
 
 ## Documentation
+- [Advanced SQL Features](docs/features/advanced_sql.md)
 The documentation has been split into several focused guides:
 
 1. **[Project Brief](docs/brief.md)** - High-level overview and core objectives of the database project.

@@ -9,9 +9,13 @@ pub fn serve_replication_stream(server: *server_mod.Server, stream: std.Io.net.S
     std.debug.print("Leader starting replication stream to follower from LSN {}\n", .{start_lsn});
     var write_buf: [1024]u8 = undefined;
     var writer = stream.writer(server.io, &write_buf);
-    
+
     var current_lsn = start_lsn;
     var header_buf: [@sizeOf(LogRecordHeader)]u8 = undefined;
+
+    const fd: i32 = stream.socket.handle;
+    const t = std.Thread.spawn(.{}, read_acks_loop, .{ server, stream, fd }) catch return;
+    t.detach();
 
     while (true) {
         if (server.catalog.buffer_manager.log_manager) |lm| {
@@ -20,6 +24,7 @@ pub fn serve_replication_stream(server: *server_mod.Server, stream: std.Io.net.S
             while (bytes_read < header_buf.len) {
                 // To avoid Zig's Io interface complexities, we just use std.fs.File read
                 // Actually the log manager uses Io.File.
+                // std.debug.print("[LeaderRepl] Reading header at lsn {d}\n", .{current_lsn});
                 const read = lm.wal_file.readPositional(server.io, &[_][]u8{header_buf[bytes_read..]}, current_lsn + bytes_read) catch |err| {
                     if (err == error.EndOfStream) {
                         lm.mutex.lockUncancelable(server.io);
@@ -48,13 +53,13 @@ pub fn serve_replication_stream(server: *server_mod.Server, stream: std.Io.net.S
                 if (payload_len > 0) {
                     const payload_buf = try server.allocator.alloc(u8, payload_len);
                     defer server.allocator.free(payload_buf);
-                    
+
                     const p_read = try lm.wal_file.readPositional(server.io, &[_][]u8{payload_buf}, current_lsn + @sizeOf(LogRecordHeader));
                     if (p_read == payload_len) {
                         writer.interface.writeAll(payload_buf) catch return;
                     }
                 }
-                
+
                 writer.interface.flush() catch return;
                 current_lsn += header.length;
             }
@@ -73,7 +78,7 @@ pub fn connect_and_replicate(server: *server_mod.Server) !void {
     const port_str = iter.next() orelse "8080";
     const port = try std.fmt.parseInt(u16, port_str, 10);
 
-    std.debug.print("Replica connecting to leader at {s}:{d}\n", .{host, port});
+    std.debug.print("Replica connecting to leader at {s}:{d}\n", .{ host, port });
 
     const peer = try std.Io.net.IpAddress.parseIp4(host, port);
     const stream = try peer.connect(server.io, .{ .mode = .stream });
@@ -103,7 +108,7 @@ pub fn connect_and_replicate(server: *server_mod.Server) !void {
 
         const header = std.mem.bytesAsValue(LogRecordHeader, &header_buf);
         const payload_len = header.length - @sizeOf(LogRecordHeader);
-        
+
         const payload_buf = try server.allocator.alloc(u8, payload_len);
         defer server.allocator.free(payload_buf);
 
@@ -155,4 +160,35 @@ fn find_table_by_root_page_id(catalog: *@import("../storage/catalog.zig").Catalo
         }
     }
     return null;
+}
+
+fn read_acks_loop(server: *server_mod.Server, stream: std.Io.net.Stream, fd: i32) void {
+    while (true) {
+        var line_buf: [256]u8 = undefined;
+        var len: usize = 0;
+        var end_of_stream = false;
+        while (len < line_buf.len) {
+            var b: [1]u8 = undefined;
+            const r = std.posix.read(stream.socket.handle, &b) catch {
+                end_of_stream = true;
+                break;
+            };
+            if (r == 0) {
+                end_of_stream = true;
+                break;
+            }
+            line_buf[len] = b[0];
+            len += 1;
+            if (b[0] == '\n') break;
+        }
+        if (end_of_stream) break;
+        const line = line_buf[0..len];
+        if (std.mem.startsWith(u8, line, "ACK ")) {
+            const lsn_str = std.mem.trim(u8, line[4..], " \n\r");
+            if (std.fmt.parseInt(u32, lsn_str, 10)) |lsn| {
+                std.debug.print("[Replication] Received ACK {d} from fd {d}\n", .{ lsn, fd });
+                server.update_peer_lsn(fd, lsn);
+            } else |_| {}
+        }
+    }
 }

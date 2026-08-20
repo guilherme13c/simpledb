@@ -57,6 +57,11 @@ pub const Parser = struct {
                 if (self.current_token.token_type == .Semicolon) self.advance();
                 return .commit;
             },
+            .KeywordPrepare => {
+                self.advance();
+                if (self.current_token.token_type == .Semicolon) self.advance();
+                return .prepare;
+            },
             .KeywordRollback => {
                 self.advance();
                 if (self.current_token.token_type == .Semicolon) self.advance();

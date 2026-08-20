@@ -13,7 +13,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
     var msg_buf: [1024]u8 = undefined;
     var write_buf: [1024]u8 = undefined;
     var writer = stream.writer(server.io, &write_buf);
-    
+
     var in_transaction = false;
     var txn_ctx: ?transaction.TransactionContext = null;
     var undo_stack = std.ArrayList(undo.UndoOp).empty;
@@ -36,7 +36,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
         const bytes_read = std.posix.read(stream.socket.handle, &msg_buf) catch break;
         if (bytes_read == 0) break;
         const msg = msg_buf[0..bytes_read];
-        
+
         var line_it = std.mem.tokenizeAny(u8, msg, "\r\n");
         while (line_it.next()) |line| {
             if (std.mem.startsWith(u8, line, "START_REPLICATION ")) {
@@ -54,7 +54,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 writer.interface.flush() catch break;
                 continue;
             };
-            
+
             defer {
                 if (stmt == .create_table) {
                     server.allocator.free(stmt.create_table.columns);
@@ -62,13 +62,13 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                     server.allocator.free(stmt.insert.values);
                 }
             }
-            
+
             var requires_exclusive_lock = false;
             var requires_shared_lock = false;
             switch (stmt) {
                 .create_table, .drop_table => requires_exclusive_lock = true,
                 .insert, .delete, .update, .select => requires_shared_lock = true,
-                else => {}
+                else => {},
             }
 
             if (server.is_replica) {
@@ -79,10 +79,10 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                         writer.interface.writeAll("ERR cannot write to a read-only replica\n") catch break;
                         writer.interface.flush() catch break;
                         continue;
-                    }
+                    },
                 }
             }
-            
+
             var did_lock_exclusive_now = false;
             var did_lock_shared_now = false;
             if (!in_transaction) {
@@ -153,16 +153,11 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
             }
 
             var ctx_ptr: ?*transaction.TransactionContext = null;
-            if (txn_ctx) |*ctx| { ctx_ptr = ctx; }
-            
-            execution.execute_statement(
-                server.allocator,
-                server.catalog,
-                stmt,
-                ctx_ptr,
-                &writer.interface,
-                if (in_transaction or did_lock_exclusive_now or did_lock_shared_now) &undo_stack else null
-            ) catch |err| {
+            if (txn_ctx) |*ctx| {
+                ctx_ptr = ctx;
+            }
+
+            execution.execute_statement(server.allocator, server.catalog, stmt, ctx_ptr, &writer.interface, if (in_transaction or did_lock_exclusive_now or did_lock_shared_now) &undo_stack else null) catch |err| {
                 if (did_lock_exclusive_now) {
                     if (server.catalog.buffer_manager.log_manager) |lm| {
                         _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .abort, 0, 0, &[_]u8{}) catch 0;

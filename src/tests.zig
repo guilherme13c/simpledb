@@ -266,7 +266,7 @@ test "Server execution logic" {
     defer catalog.deinit();
     
     const Server = @import("server/server.zig").Server;
-    var server = try Server.init(std.testing.allocator, io, 8080, &catalog, null);
+    var server = try Server.init(std.testing.allocator, io, 8080, &catalog, null, 0, 1, &[_][]const u8{});
     
     // CREATE TABLE
     const schema = [_]@import("query/ast.zig").ColumnDef{
@@ -931,7 +931,7 @@ test "Secondary Index" {
     defer catalog.deinit();
     
     const Server = @import("server/server.zig").Server;
-    var server = try Server.init(std.testing.allocator, io, 8080, &catalog, null);
+    var server = try Server.init(std.testing.allocator, io, 8080, &catalog, null, 0, 1, &[_][]const u8{});
 
     // CREATE TABLE
     const schema = [_]@import("query/ast.zig").ColumnDef{

@@ -29,6 +29,7 @@ pub const TokenType = enum {
     KeywordBegin,
     KeywordCommit,
     KeywordRollback,
+    KeywordPrepare,
     KeywordExplain,
     KeywordWith,
     KeywordAs,
@@ -214,6 +215,7 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "BEGIN")) return .{ .token_type = .KeywordBegin, .text = text };
             if (case_insensitive_eq(text, "COMMIT")) return .{ .token_type = .KeywordCommit, .text = text };
             if (case_insensitive_eq(text, "ROLLBACK")) return .{ .token_type = .KeywordRollback, .text = text };
+            if (case_insensitive_eq(text, "PREPARE")) return .{ .token_type = .KeywordPrepare, .text = text };
             if (case_insensitive_eq(text, "EXPLAIN")) return .{ .token_type = .KeywordExplain, .text = text };
             if (case_insensitive_eq(text, "WITH")) return .{ .token_type = .KeywordWith, .text = text };
             if (case_insensitive_eq(text, "AS")) return .{ .token_type = .KeywordAs, .text = text };

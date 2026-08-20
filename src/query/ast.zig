@@ -159,6 +159,7 @@ pub const StatementType = enum {
     begin,
     commit,
     rollback,
+    prepare,
     explain,
     with,
 };
@@ -196,6 +197,7 @@ pub const Statement = union(StatementType) {
     begin: void,
     commit: void,
     rollback: void,
+    prepare: void,
     explain: *Statement,
     with: struct {
         ctes: []const Cte,

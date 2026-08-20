@@ -17,8 +17,41 @@ pub const Server = struct {
     is_replica: bool,
     leader_address: ?[]const u8,
 
+    gossip: ?*@import("gossip.zig").GossipProtocol,
+    raft: ?*@import("raft.zig").Raft,
+
+    shard_id: u32,
+    num_shards: u32,
+
+    // Quorum replication
+    quorum_mutex: std.Io.Mutex,
+    quorum_cond: std.Io.Condition,
+    peer_lsns: std.AutoHashMap(i32, u32),
+
     /// Initializes a new Server instance.
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, catalog: *Catalog, leader_address: ?[]const u8) !Server {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, catalog: *Catalog, leader_address: ?[]const u8, shard_id: u32, num_shards: u32, extra_seeds: []const []const u8) !Server {
+        var gossip_ptr: ?*@import("gossip.zig").GossipProtocol = null;
+        var raft_ptr: ?*@import("raft.zig").Raft = null;
+
+        var seeds = std.ArrayList([]const u8).empty;
+        defer seeds.deinit(allocator);
+        if (leader_address) |addr| {
+            try seeds.append(allocator, addr);
+        }
+        for (extra_seeds) |seed| {
+            try seeds.append(allocator, seed);
+        }
+
+        const gp = try allocator.create(@import("gossip.zig").GossipProtocol);
+        gp.* = try @import("gossip.zig").GossipProtocol.init(allocator, io, port, seeds.items, shard_id, num_shards);
+
+        const r = try allocator.create(@import("raft.zig").Raft);
+        r.* = @import("raft.zig").Raft.init(allocator, io, gp);
+
+        gp.raft = r;
+        gossip_ptr = gp;
+        raft_ptr = r;
+
         return Server{
             .allocator = allocator,
             .io = io,
@@ -29,8 +62,18 @@ pub const Server = struct {
             .active_txn_mutex = .init,
             .next_txn_id = std.atomic.Value(u32).init(1),
             .lock_manager = LockManager.init(allocator, io),
+            // Replicas start as followers, handled by Raft.
+            // `is_replica` should probably update dynamically, but for now we set it to true if we aren't a leader later.
+
             .is_replica = leader_address != null,
             .leader_address = leader_address,
+            .gossip = gossip_ptr,
+            .raft = raft_ptr,
+            .shard_id = shard_id,
+            .num_shards = num_shards,
+            .quorum_mutex = .init,
+            .quorum_cond = .init,
+            .peer_lsns = std.AutoHashMap(i32, u32).init(allocator),
         };
     }
 
@@ -56,10 +99,70 @@ pub const Server = struct {
         txn_ctx.deinit();
     }
 
+    pub fn wait_for_quorum(self: *Server, target_lsn: u32) !void {
+        var active_peers = std.ArrayList([]const u8).empty;
+        defer active_peers.deinit(self.allocator);
+
+        if (self.gossip) |gp| {
+            try gp.get_active_peers(&active_peers);
+        }
+
+        const cluster_size = active_peers.items.len + 1;
+        const required_acks = (cluster_size / 2); // since we (leader) already have it, we need (quorum - 1) followers
+
+        if (required_acks == 0) return; // single node cluster
+
+        self.quorum_mutex.lockUncancelable(self.io);
+        defer self.quorum_mutex.unlock(self.io);
+
+        while (true) {
+            var acks: usize = 0;
+            var it = self.peer_lsns.iterator();
+            while (it.next()) |kv| {
+                if (kv.value_ptr.* >= target_lsn) {
+                    acks += 1;
+                }
+            }
+            std.debug.print("[Quorum] Waiting for LSN {d}, acks={d}/{d}\n", .{ target_lsn, acks, required_acks });
+            if (acks >= required_acks) {
+                break;
+            }
+
+            // Wait for next ACK or cluster topology change
+            self.quorum_cond.waitUncancelable(self.io, &self.quorum_mutex);
+        }
+    }
+
+    pub fn update_peer_lsn(self: *Server, fd: i32, lsn: u32) void {
+        self.quorum_mutex.lockUncancelable(self.io);
+        defer self.quorum_mutex.unlock(self.io);
+        self.peer_lsns.put(fd, lsn) catch return;
+        self.quorum_cond.broadcast(self.io);
+    }
+
+    pub fn remove_peer_lsn(self: *Server, fd: i32) void {
+        self.quorum_mutex.lockUncancelable(self.io);
+        defer self.quorum_mutex.unlock(self.io);
+        _ = self.peer_lsns.remove(fd);
+        self.quorum_cond.broadcast(self.io);
+    }
+
     pub fn start(self: *Server) !void {
+        if (self.gossip) |gp| {
+            gp.start(self) catch |err| {
+                std.debug.print("Failed to start Gossip Protocol: {} ", .{err});
+            };
+        }
+
+        if (self.raft) |r| {
+            r.start() catch |err| {
+                std.debug.print("Failed to start Raft Protocol: {} ", .{err});
+            };
+        }
+
         if (self.is_replica) {
             const repl_thread = std.Thread.spawn(.{}, @import("replication.zig").connect_and_replicate, .{self}) catch |err| {
-                std.debug.print("Failed to spawn replication client thread: {}\n", .{err});
+                std.debug.print("Failed to spawn replication client thread: {} ", .{err});
                 return err;
             };
             repl_thread.detach();
@@ -69,23 +172,23 @@ pub const Server = struct {
         var listener = try address.listen(self.io, .{ .reuse_address = true });
         defer listener.socket.close(self.io);
 
-        std.debug.print("Server listening on 127.0.0.1:{d}\n", .{self.port});
+        std.debug.print("Server listening on 127.0.0.1:{d} ", .{self.port});
 
         const checkpointer = std.Thread.spawn(.{}, checkpointer_loop, .{self}) catch |err| {
-            std.debug.print("Failed to spawn checkpointer thread: {}\n", .{err});
+            std.debug.print("Failed to spawn checkpointer thread: {} ", .{err});
             return err;
         };
         checkpointer.detach();
 
         while (true) {
             var stream = listener.accept(self.io) catch |err| {
-                std.debug.print("Error accepting connection: {}\n", .{err});
+                std.debug.print("Error accepting connection: {} ", .{err});
                 continue;
             };
-            std.debug.print("Accepted connection! (Spawning thread...)\n", .{});
+            std.debug.print("Accepted connection! (Spawning thread...) ", .{});
 
             const thread = std.Thread.spawn(.{}, connection.handleConnection, .{ self, stream }) catch |err| {
-                std.debug.print("Failed to spawn thread: {}\n", .{err});
+                std.debug.print("Failed to spawn thread: {} ", .{err});
                 stream.close(self.io);
                 continue;
             };
@@ -101,9 +204,9 @@ pub const Server = struct {
         while (true) {
             self.io.sleep(std.Io.Duration.fromSeconds(5), .awake) catch {};
             self.catalog.buffer_manager.checkpoint() catch |err| {
-                std.debug.print("Checkpointer failed: {}\n", .{err});
+                std.debug.print("Checkpointer failed: {} ", .{err});
             };
-            std.debug.print("[Checkpointer] Checkpoint complete.\n", .{});
+            std.debug.print("[Checkpointer] Checkpoint complete. ", .{});
         }
     }
 };

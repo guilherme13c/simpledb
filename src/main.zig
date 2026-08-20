@@ -12,9 +12,13 @@ pub fn main(init: std.process.Init) !void {
 
 
 
-    var cli_mode = false;
+var cli_mode = false;
     var port: u16 = 8080;
     var replica_of: ?[]const u8 = null;
+    var shard_id: u32 = 0;
+    var num_shards: u32 = 1;
+    var gossip_seeds = std.ArrayList([]const u8).empty;
+    defer gossip_seeds.deinit(allocator);
 
     var args_it = init.minimal.args.iterate();
     _ = args_it.skip();
@@ -25,9 +29,22 @@ pub fn main(init: std.process.Init) !void {
             if (args_it.next()) |p_arg| {
                 port = std.fmt.parseInt(u16, p_arg, 10) catch 8080;
             }
+
         } else if (std.mem.eql(u8, arg, "--replica-of")) {
             if (args_it.next()) |r_arg| {
                 replica_of = r_arg;
+            }
+        } else if (std.mem.eql(u8, arg, "--seed")) {
+            if (args_it.next()) |s_arg| {
+                try gossip_seeds.append(allocator, s_arg);
+            }
+        } else if (std.mem.eql(u8, arg, "--shard-id")) {
+            if (args_it.next()) |s_arg| {
+                shard_id = std.fmt.parseInt(u32, s_arg, 10) catch 0;
+            }
+        } else if (std.mem.eql(u8, arg, "--num-shards")) {
+            if (args_it.next()) |n_arg| {
+                num_shards = std.fmt.parseInt(u32, n_arg, 10) catch 1;
             }
         }
     }
@@ -69,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("SimpleDB: Tables & Concurrency!\n", .{});
     std.debug.print("==================================\n", .{});
 
-    var server = try @import("server/server.zig").Server.init(allocator, io, port, &catalog, replica_of);
+    var server = try @import("server/server.zig").Server.init(allocator, io, port, &catalog, replica_of, shard_id, num_shards, gossip_seeds.items);
 
     if (cli_mode) {
         std.debug.print("Starting SimpleDB TCP Server on port {d} in background...\n", .{port});

@@ -10,6 +10,7 @@ pub const LogManager = struct {
     global_lsn: std.atomic.Value(u32),
     flushed_lsn: std.atomic.Value(u32),
     current_offset: u32, // The physical offset in the file, which we use as the LSN
+    cond: std.Io.Condition,
 
     pub fn init(io: std.Io, wal_file: std.Io.File) !LogManager {
         const stat = try wal_file.stat(io);
@@ -20,6 +21,7 @@ pub const LogManager = struct {
             .global_lsn = std.atomic.Value(u32).init(@as(u32, @intCast(stat.size))),
             .flushed_lsn = std.atomic.Value(u32).init(@as(u32, @intCast(stat.size))),
             .current_offset = @as(u32, @intCast(stat.size)),
+            .cond = .init,
         };
     }
 
@@ -60,6 +62,8 @@ pub const LogManager = struct {
 
         self.current_offset += @as(u32, @intCast(total_size));
         self.global_lsn.store(self.current_offset, .release);
+
+        self.cond.broadcast(self.io);
 
         return current_lsn;
     }

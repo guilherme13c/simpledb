@@ -39,6 +39,15 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
         
         var line_it = std.mem.tokenizeAny(u8, msg, "\r\n");
         while (line_it.next()) |line| {
+            if (std.mem.startsWith(u8, line, "START_REPLICATION ")) {
+                const lsn_str = line[18..];
+                const lsn = std.fmt.parseInt(u32, lsn_str, 10) catch 0;
+                @import("replication.zig").serve_replication_stream(server, stream, lsn) catch |err| {
+                    std.debug.print("Replication stream error: {}\n", .{err});
+                };
+                return;
+            }
+
             var parser = parser_mod.Parser.init(line, server.allocator);
             const stmt = parser.parse_statement() catch |err| {
                 writer.interface.print("ERR PARSER: {}\n", .{err}) catch break;
@@ -60,6 +69,18 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 .create_table, .drop_table => requires_exclusive_lock = true,
                 .insert, .delete, .update, .select => requires_shared_lock = true,
                 else => {}
+            }
+
+            if (server.is_replica) {
+                switch (stmt) {
+                    .select => {}, // allowed
+                    .begin, .commit, .rollback => {}, // allowed, though effectively read-only txn
+                    else => {
+                        writer.interface.writeAll("ERR cannot write to a read-only replica\n") catch break;
+                        writer.interface.flush() catch break;
+                        continue;
+                    }
+                }
             }
             
             var did_lock_exclusive_now = false;

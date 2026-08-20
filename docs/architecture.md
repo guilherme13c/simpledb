@@ -33,3 +33,8 @@ The interface tier provides two distinct interaction models:
 - **CLI / REPL:** A native interactive shell directly piped via `--cli`, sharing the server's transaction and WAL context for testing and local scripting.
 
 Both interfaces implement **Physical Logging** via ARIES, immediately saving transaction mutations (Analysis, Redo, Undo) into a Write-Ahead Log (`simpledb.wal`) before acknowledging commits, ensuring ACID properties.
+
+### 8. Replication & Distribution (`replication.zig`)
+SimpleDB supports highly available Leader-Follower topologies via streaming Logical WAL Replication. 
+- **The Leader:** Accepts read and write queries. When a write transaction mutates the state, the transaction's changes are physically logged in the ARIES WAL, and a parallel set of **Logical** WAL entries (e.g., `logical_insert`, `logical_delete`) are broadcasted to all connected Replicas.
+- **The Replica:** Operates in read-only mode, opening a persistent TCP stream to the Leader. As logical WAL entries arrive over the wire, they are immediately applied to the Replica's local catalog and B+Tree structures. DDL statements (like `CREATE TABLE`) automatically instantiate and format new pages in real-time, allowing the cluster to scale out horizontally for read-heavy workloads.

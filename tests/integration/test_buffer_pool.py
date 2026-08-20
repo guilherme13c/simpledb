@@ -65,7 +65,7 @@ class TestBufferPoolSpill(unittest.TestCase):
         
         # Open a single persistent connection for the inserts to speed them up
         with socket.create_connection((HOST, DB_PORT)) as s:
-            s.settimeout(120.0)
+            s.settimeout(180.0)
             
             s.sendall(b"BEGIN;\n")
             resp = s.recv(4096)

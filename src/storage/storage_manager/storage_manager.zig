@@ -96,6 +96,7 @@ pub const StorageManager = struct {
         const offset = page_id * page.page_size;
         const data = @as([*]u8, @ptrCast(destination))[0..page.page_size];
         
+
         var ctx = IoContext{
             .res = 0,
             .done = std.atomic.Value(bool).init(false),
@@ -126,6 +127,11 @@ pub const StorageManager = struct {
         
         try self.wait_for_cqe(&ctx);
         if (ctx.res < 0) return error.IoError;
+        
+        const bytes_read: usize = @intCast(ctx.res);
+        if (bytes_read < page.page_size) {
+            @memset(data[bytes_read..], 0);
+        }
     }
 
     pub fn read_pages(self: *StorageManager, page_ids: []const u32, destinations: []const *page.Page) !void {
@@ -172,6 +178,12 @@ pub const StorageManager = struct {
         for (0..count) |i| {
             try self.wait_for_cqe(&contexts[i]);
             if (contexts[i].res < 0) return error.IoError;
+            
+            const bytes_read: usize = @intCast(contexts[i].res);
+            if (bytes_read < page.page_size) {
+                const data = @as([*]u8, @ptrCast(destinations[i]))[0..page.page_size];
+                @memset(data[bytes_read..], 0);
+            }
         }
     }
 

@@ -2,7 +2,7 @@
 
 **SimpleDB** is a custom, lightweight, high-performance database engine built from scratch in Zig 0.16.0.
 
-It explores fundamental, low-level database primitives by implementing its own storage abstractions instead of relying on external libraries or OS-level page caches. 
+It explores fundamental, low-level database primitives by implementing its own storage abstractions instead of relying on external libraries or OS-level page caches. SimpleDB supports advanced features like Multi-Version Concurrency Control (MVCC), io_uring asynchronous I/O, ARIES crash recovery, and Leader-Follower logical replication for horizontal read scaling.
 
 ## Documentation
 - [Advanced SQL Features](docs/features/advanced_sql.md)

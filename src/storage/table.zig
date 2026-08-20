@@ -55,11 +55,18 @@ pub const Table = struct {
 
             if (view.insert_tuple(&mvcc_header, data)) |slot_id| {
                 if (self.buffer_manager.log_manager) |lm| {
-                    if (txn_ctx) |ctx| {
-                        const lsn = try lm.append_record(ctx.txn_id, ctx.prev_lsn, .insert_tuple, self.current_heap_page_id, slot_id, data);
-                        frame.page.header.lsn = lsn;
-                        ctx.prev_lsn = lsn;
-                    }
+                    const txn_id = if (txn_ctx) |ctx| ctx.txn_id else 0;
+                    const prev_lsn = if (txn_ctx) |ctx| ctx.prev_lsn else 0;
+
+                    const payload_len = 8 + data.len;
+                    var logical_payload = try self.allocator.alloc(u8, payload_len);
+                    defer self.allocator.free(logical_payload);
+                    std.mem.writeInt(u64, logical_payload[0..8][0..8], key, .little);
+                    @memcpy(logical_payload[8..], data);
+                    
+                    const lsn = try lm.append_record(txn_id, prev_lsn, .logical_insert, self.btree.root_page_id, 0, logical_payload);
+                    frame.page.header.lsn = lsn;
+                    if (txn_ctx) |ctx| ctx.prev_lsn = lsn;
                 }
                 const rid = (@as(u64, self.current_heap_page_id) << 32) | @as(u64, slot_id);
                 if (txn_ctx) |ctx| {
@@ -228,7 +235,11 @@ pub const Table = struct {
                             try view.update_xmax(slot_id, ctx.txn_id);
                             
                             if (self.buffer_manager.log_manager) |lm| {
-                                const lsn = try lm.append_record(ctx.txn_id, ctx.prev_lsn, .delete_tuple, heap_page_id, slot_id, &[_]u8{});
+                                var logical_payload = try self.allocator.alloc(u8, 8);
+                                defer self.allocator.free(logical_payload);
+                                std.mem.writeInt(u64, logical_payload[0..8][0..8], key, .little);
+
+                                const lsn = try lm.append_record(ctx.txn_id, ctx.prev_lsn, .logical_delete, self.btree.root_page_id, 0, logical_payload);
                                 frame.page.header.lsn = lsn;
                                 ctx.prev_lsn = lsn;
                             }

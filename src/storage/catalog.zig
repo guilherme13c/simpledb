@@ -79,7 +79,7 @@ pub const Catalog = struct {
         return catalog;
     }
 
-    fn load_sys_tables(self: *Catalog) !void {
+    pub fn load_sys_tables(self: *Catalog) !void {
         const sys_table = self.tables.get("sys_tables").?;
         const all_entries = try sys_table.scan(self.allocator, null, 0, std.math.maxInt(u64));
         defer self.allocator.free(all_entries);
@@ -124,7 +124,22 @@ pub const Catalog = struct {
             } else {
                 const btree = try self.allocator.create(BTree);
                 btree.* = try BTree.init(self.buffer_manager, root_id, self.next_page_counter);
-
+                
+                // On Replica, the table might have been logically replicated but its root page is still unformatted.
+                // If it's completely empty, format it as a leaf node.
+                {
+                    const frame = try self.buffer_manager.fetch_frame(root_id);
+                    if (frame.page.header.lsn == 0 and frame.page.header.special == 0 and frame.page.header.lower == 0) {
+                        _ = @import("index/btree_node.zig").BTreeNodeView.init(&frame.page, .leaf);
+                        frame.is_dirty = true;
+                    }
+                    self.buffer_manager.unpin_frame(frame, true);
+                }
+                
+                if (self.next_page_counter.* <= root_id) {
+                    self.next_page_counter.* = root_id + 1;
+                }
+                
                 const table = try self.allocator.create(Table);
                 const final_schema = try schema_list.toOwnedSlice(self.allocator);
                 table.* = try Table.init(self.allocator, self.buffer_manager, btree, self.next_page_counter, final_schema);

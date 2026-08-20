@@ -14,9 +14,11 @@ pub const Server = struct {
     active_txn_mutex: std.Io.Mutex,
     next_txn_id: std.atomic.Value(u32),
     lock_manager: LockManager,
+    is_replica: bool,
+    leader_address: ?[]const u8,
 
     /// Initializes a new Server instance.
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, catalog: *Catalog) !Server {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, catalog: *Catalog, leader_address: ?[]const u8) !Server {
         return Server{
             .allocator = allocator,
             .io = io,
@@ -27,6 +29,8 @@ pub const Server = struct {
             .active_txn_mutex = .init,
             .next_txn_id = std.atomic.Value(u32).init(1),
             .lock_manager = LockManager.init(allocator, io),
+            .is_replica = leader_address != null,
+            .leader_address = leader_address,
         };
     }
 
@@ -52,8 +56,15 @@ pub const Server = struct {
         txn_ctx.deinit();
     }
 
-    /// Starts the server and listens for incoming connections.
     pub fn start(self: *Server) !void {
+        if (self.is_replica) {
+            const repl_thread = std.Thread.spawn(.{}, @import("replication.zig").connect_and_replicate, .{self}) catch |err| {
+                std.debug.print("Failed to spawn replication client thread: {}\n", .{err});
+                return err;
+            };
+            repl_thread.detach();
+        }
+
         const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", self.port);
         var listener = try address.listen(self.io, .{ .reuse_address = true });
         defer listener.socket.close(self.io);

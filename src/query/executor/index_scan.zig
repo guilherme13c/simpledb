@@ -20,20 +20,40 @@ pub const IndexScanExecutor = struct {
     condition: ast.Condition,
     allocator: std.mem.Allocator,
     txn_ctx: ?*TransactionContext = null,
-    index_btree: ?*@import("../../storage/index/btree.zig").BTree = null,
+    index_def: ?@import("../../storage/table.zig").IndexDef = null,
     rids: []u64 = &[_]u64{},
     current_idx: usize = 0,
 
     /// Initializes the executor and prepares it to yield tuples.
     pub fn open(self: *IndexScanExecutor) !void {
-        const btree = if (self.index_btree) |idx| idx else self.table.btree;
-        switch (self.condition) {
-            .eq => |eq| {
-                self.rids = try btree.scan(self.allocator, eq.key, eq.key);
-            },
-            .range => |r| {
-                self.rids = try btree.scan(self.allocator, r.start, r.end);
-            },
+        if (self.index_def) |idx_def| {
+            if (idx_def.index_type == .hash) {
+                switch (self.condition) {
+                    .eq => |eq| {
+                        self.rids = try idx_def.hash_idx.?.search(self.allocator, eq.key);
+                    },
+                    .range => return error.RangeScanNotSupportedOnHashIndex,
+                }
+            } else {
+                switch (self.condition) {
+                    .eq => |eq| {
+                        self.rids = try idx_def.btree.?.scan(self.allocator, eq.key, eq.key);
+                    },
+                    .range => |r| {
+                        self.rids = try idx_def.btree.?.scan(self.allocator, r.start, r.end);
+                    },
+                }
+            }
+        } else {
+            const btree = self.table.btree;
+            switch (self.condition) {
+                .eq => |eq| {
+                    self.rids = try btree.scan(self.allocator, eq.key, eq.key);
+                },
+                .range => |r| {
+                    self.rids = try btree.scan(self.allocator, r.start, r.end);
+                },
+            }
         }
         self.current_idx = 0;
     }

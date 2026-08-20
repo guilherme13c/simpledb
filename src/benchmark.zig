@@ -439,7 +439,7 @@ fn benchmark_secondary_index(allocator: std.mem.Allocator, io: std.Io) !void {
     }
 
     var start_time = get_time_ms();
-    try catalog.create_index("idx_age", "bench_users", "age");
+    try catalog.create_index("idx_age", "bench_users", "age", .btree);
     var elapsed = get_time_ms() - start_time;
     std.debug.print("Secondary Index Creation (500k records backfill): {d} ms\n", .{elapsed});
 
@@ -448,7 +448,7 @@ fn benchmark_secondary_index(allocator: std.mem.Allocator, io: std.Io) !void {
         var idx = exec.IndexScanExecutor{
             .table = table,
             .condition = .{ .eq = .{ .key = @intCast(i) } },
-            .index_btree = table.indexes.get("idx_age").?.btree,
+            .index_def = table.indexes.get("idx_age").?,
             .allocator = allocator,
         };
         try idx.open();

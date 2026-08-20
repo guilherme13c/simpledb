@@ -419,7 +419,7 @@ pub fn evaluate_join_expression(
 }
 
 /// Try to convert a simple primary-key expression (first column = int) into an IndexScan Condition.
-pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../storage/table.zig").Table) ?struct { cond: ast.Condition, index: ?*@import("../storage/index/btree.zig").BTree } {
+pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../storage/table.zig").Table) ?struct { cond: ast.Condition, index_def: ?@import("../storage/table.zig").IndexDef } {
     if (table.schema.len == 0) return null;
 
     switch (expr) {
@@ -428,7 +428,7 @@ pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../sto
             if (cmp.op != .eq) return null;
 
             if (std.mem.eql(u8, cmp.column, table.schema[0].name) and cmp.value == .int) {
-                return .{ .cond = .{ .eq = .{ .key = cmp.value.int } }, .index = null };
+                return .{ .cond = .{ .eq = .{ .key = cmp.value.int } }, .index_def = null };
             }
 
             var it = table.indexes.iterator();
@@ -445,7 +445,7 @@ pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../sto
                         .signed_int => |i| @as(u64, @bitCast(i)),
                         else => return null,
                     };
-                    return .{ .cond = .{ .eq = .{ .key = hash_key } }, .index = index_def.btree };
+                    return .{ .cond = .{ .eq = .{ .key = hash_key } }, .index_def = index_def };
                 }
             }
             return null;
@@ -461,10 +461,10 @@ pub fn try_extract_index_condition(expr: ast.Expression, table: *@import("../sto
                 if (l.value != .int or r.value != .int) return null;
 
                 if (l.op == .gte and r.op == .lte) {
-                    return .{ .cond = .{ .range = .{ .start = l.value.int, .end = r.value.int } }, .index = null };
+                    return .{ .cond = .{ .range = .{ .start = l.value.int, .end = r.value.int } }, .index_def = null };
                 }
                 if (l.op == .lte and r.op == .gte) {
-                    return .{ .cond = .{ .range = .{ .start = r.value.int, .end = l.value.int } }, .index = null };
+                    return .{ .cond = .{ .range = .{ .start = r.value.int, .end = l.value.int } }, .index_def = null };
                 }
             }
             return null;

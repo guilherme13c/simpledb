@@ -152,7 +152,11 @@ pub const Catalog = struct {
         var idx_it = table.indexes.iterator();
         while (idx_it.next()) |idx_kv| {
             self.allocator.free(idx_kv.key_ptr.*);
-            self.allocator.destroy(idx_kv.value_ptr.*.btree);
+            if (idx_kv.value_ptr.*.btree) |bt| self.allocator.destroy(bt);
+            if (idx_kv.value_ptr.*.hash_idx) |hi| {
+                hi.deinit();
+                self.allocator.destroy(hi);
+            }
         }
         table.indexes.deinit();
         self.allocator.destroy(table);
@@ -315,7 +319,7 @@ pub const Catalog = struct {
         }
     }
 
-    pub fn create_index(self: *Catalog, index_name: []const u8, table_name: []const u8, column_name: []const u8) !void {
+    pub fn create_index(self: *Catalog, index_name: []const u8, table_name: []const u8, column_name: []const u8, index_type: ast.IndexType) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -332,21 +336,31 @@ pub const Catalog = struct {
         if (col_idx == null) return error.ColumnNotFound;
         if (table.indexes.contains(index_name)) return error.IndexAlreadyExists;
 
-        const root_page_id = self.next_page_counter.*;
-        self.next_page_counter.* += 1;
+        var btree: ?*BTree = null;
+        var hash_idx: ?*@import("index/hash_index.zig").HashIndex = null;
         
-        {
-            const root_frame = try self.buffer_manager.new_frame(root_page_id);
-            _ = @import("index/btree_node.zig").BTreeNodeView.init(&root_frame.page, .leaf);
-            self.buffer_manager.unpin_frame(root_frame, true);
-        }
+        if (index_type == .btree) {
+            const root_page_id = self.next_page_counter.*;
+            self.next_page_counter.* += 1;
+            
+            {
+                const root_frame = try self.buffer_manager.new_frame(root_page_id);
+                _ = @import("index/btree_node.zig").BTreeNodeView.init(&root_frame.page, .leaf);
+                self.buffer_manager.unpin_frame(root_frame, true);
+            }
 
-        const btree = try self.allocator.create(BTree);
-        btree.* = try BTree.init(self.buffer_manager, root_page_id, self.next_page_counter);
+            btree = try self.allocator.create(BTree);
+            btree.?.* = try BTree.init(self.buffer_manager, root_page_id, self.next_page_counter);
+        } else {
+            hash_idx = try self.allocator.create(@import("index/hash_index.zig").HashIndex);
+            hash_idx.?.* = @import("index/hash_index.zig").HashIndex.init(self.allocator);
+        }
 
         const index_def = @import("table.zig").IndexDef{
             .column_idx = col_idx.?,
+            .index_type = index_type,
             .btree = btree,
+            .hash_idx = hash_idx,
         };
         
         try table.indexes.put(try self.allocator.dupe(u8, index_name), index_def);
@@ -362,9 +376,11 @@ pub const Catalog = struct {
             const frame = try self.buffer_manager.fetch_frame(heap_page_id);
             var view = @import("page/slotted_view.zig").SlottedView.init(&frame.page, false);
             
-            if (view.get_tuple(slot_id)) |data| {
-                if (table.deserialize_tuple(self.allocator, data)) |tuple| {
-                    defer @import("../query/executor.zig").free_tuple(self.allocator, tuple);
+            if (view.get_tuple(slot_id)) |full_data| {
+                if (full_data.len >= 8) {
+                    const data = full_data[8..];
+                    if (table.deserialize_tuple(self.allocator, data)) |tuple| {
+                        defer @import("../query/executor.zig").free_tuple(self.allocator, tuple);
                     const val = tuple[col_idx.?];
                     const hash_key = switch (val) {
                         .int => |v| v,
@@ -374,8 +390,13 @@ pub const Catalog = struct {
                         .signed_int => |i| @as(u64, @bitCast(i)),
                         else => 0,
                     };
-                    try btree.insert(null, hash_key, rid);
+                    if (index_type == .btree) {
+                        try btree.?.insert(null, hash_key, rid);
+                    } else {
+                        try hash_idx.?.insert(hash_key, rid);
+                    }
                 } else |_| {}
+                }
             }
             self.buffer_manager.unpin_frame(frame, false);
         }

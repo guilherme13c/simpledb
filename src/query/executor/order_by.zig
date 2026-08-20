@@ -7,8 +7,7 @@ const free_tuple = @import("../executor.zig").free_tuple;
 
 pub const OrderByExecutor = struct {
     child: *Executor,
-    order_by_col: []const u8,
-    is_desc: bool,
+    order_by_exprs: []const ast.OrderByExpr,
     schema: []const ast.ColumnDef,
     allocator: std.mem.Allocator,
     
@@ -30,28 +29,40 @@ pub const OrderByExecutor = struct {
             }
             self.executed = true;
 
-            const col_idx = resolve_column(self.schema, self.order_by_col) orelse return error.SchemaMismatch;
+            var indices = try self.allocator.alloc(usize, self.order_by_exprs.len);
+            defer self.allocator.free(indices);
+            
+            for (self.order_by_exprs, 0..) |expr, i| {
+                indices[i] = resolve_column(self.schema, expr.column) orelse return error.SchemaMismatch;
+            }
 
             const SortContext = struct {
-                col_idx: usize,
-                is_desc: bool,
+                exprs: []const ast.OrderByExpr,
+                indices: []const usize,
 
                 pub fn lessThan(ctx: @This(), a: []ast.Value, b: []ast.Value) bool {
-                    if (a.len <= ctx.col_idx or b.len <= ctx.col_idx) return false;
-                    const val_a = a[ctx.col_idx];
-                    const val_b = b[ctx.col_idx];
-                    const lt = compare_values(val_a, .lt, val_b);
-                    const gt = compare_values(val_a, .gt, val_b);
-                    
-                    if (ctx.is_desc) {
-                        return gt;
-                    } else {
-                        return lt;
+                    for (ctx.exprs, 0..) |expr, i| {
+                        const col_idx = ctx.indices[i];
+                        if (a.len <= col_idx or b.len <= col_idx) return false;
+                        const val_a = a[col_idx];
+                        const val_b = b[col_idx];
+                        
+                        const eq = compare_values(val_a, .eq, val_b);
+                        if (!eq) {
+                            const lt = compare_values(val_a, .lt, val_b);
+                            const gt = compare_values(val_a, .gt, val_b);
+                            if (expr.is_desc) {
+                                return gt;
+                            } else {
+                                return lt;
+                            }
+                        }
                     }
+                    return false;
                 }
             };
 
-            std.mem.sort([]ast.Value, self.tuples.items, SortContext{ .col_idx = col_idx, .is_desc = self.is_desc }, SortContext.lessThan);
+            std.mem.sort([]ast.Value, self.tuples.items, SortContext{ .exprs = self.order_by_exprs, .indices = indices }, SortContext.lessThan);
         }
 
         if (self.current_idx < self.tuples.items.len) {

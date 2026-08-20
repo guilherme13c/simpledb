@@ -125,7 +125,7 @@ fn execute_statement_internal(
             try catalog.alter_table(a.table_name, a.action);
         },
         .create_index => |c| {
-            try catalog.create_index(c.index_name, c.table_name, c.column_name);
+            try catalog.create_index(c.index_name, c.table_name, c.column_name, c.index_type);
         },
         .drop_table => |d| {
             try catalog.drop_table(d.table_name);
@@ -164,7 +164,7 @@ fn execute_statement_internal(
                         index_exec = exec.IndexScanExecutor{
                             .table = table,
                             .condition = extracted.cond,
-                            .index_btree = extracted.index,
+                            .index_def = extracted.index_def,
                             .txn_ctx = txn_ctx,
                             .allocator = allocator,
                         };
@@ -217,7 +217,7 @@ fn execute_statement_internal(
                         index_exec = exec.IndexScanExecutor{
                             .table = table,
                             .condition = extracted.cond,
-                            .index_btree = extracted.index,
+                            .index_def = extracted.index_def,
                             .txn_ctx = txn_ctx,
                             .allocator = allocator,
                         };
@@ -304,7 +304,7 @@ fn execute_statement_internal(
                             index_exec = exec.IndexScanExecutor{
                                 .table = table,
                                 .condition = extracted.cond,
-                                .index_btree = extracted.index,
+                                .index_def = extracted.index_def,
                                 .txn_ctx = txn_ctx,
                                 .allocator = allocator,
                             };
@@ -511,8 +511,7 @@ var right_seq_exec: exec.SeqScanExecutor = undefined;
                 if (s.order_by) |ob| {
                     order_by_exec = exec.OrderByExecutor{
                         .child = &final_executor_copy,
-                        .order_by_col = ob,
-                        .is_desc = s.is_desc,
+                        .order_by_exprs = ob,
                         .schema = current_schema,
                         .allocator = allocator,
                     };

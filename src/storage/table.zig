@@ -7,7 +7,9 @@ const TransactionContext = @import("wal/transaction.zig").TransactionContext;
 
 pub const IndexDef = struct {
     column_idx: usize,
-    btree: *BTree,
+    index_type: @import("../query/ast.zig").IndexType,
+    btree: ?*BTree,
+    hash_idx: ?*@import("index/hash_index.zig").HashIndex,
 };
 
 pub const Table = struct {
@@ -70,7 +72,11 @@ pub const Table = struct {
                     while (it.next()) |kv| {
                         const index_def = kv.value_ptr.*;
                         if (self.extract_hash_key(data, index_def.column_idx)) |hash_key| {
-                            try index_def.btree.insert(txn_ctx, hash_key, rid);
+                            if (index_def.index_type == .btree) {
+                                try index_def.btree.?.insert(txn_ctx, hash_key, rid);
+                            } else if (index_def.index_type == .hash) {
+                                try index_def.hash_idx.?.insert(hash_key, rid);
+                            }
                         } else |_| {}
                     }
                 }

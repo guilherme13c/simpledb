@@ -41,8 +41,8 @@ class TestSimpleDBServer(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        # Teardown
-        cls.server_proc.terminate()
+        cls.server_proc.kill()
+        cls.server_proc.communicate()
         try:
             cls.server_proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -143,6 +143,45 @@ class TestSimpleDBServer(unittest.TestCase):
         self.assertIn("Item9", resp)
         self.assertIn("TestUser5", resp)
         self.assertIn("TestUser9", resp)
+
+    def test_07_hash_index(self):
+        resp = self.send_query("CREATE TABLE hash_test (id INT, val INT);")
+        self.assertIn("OK", resp)
+        self.send_query("INSERT INTO hash_test VALUES (1, 100);")
+        self.send_query("INSERT INTO hash_test VALUES (2, 200);")
+        self.send_query("INSERT INTO hash_test VALUES (3, 300);")
+        self.send_query("INSERT INTO hash_test VALUES (4, 400);")
+        self.send_query("INSERT INTO hash_test VALUES (5, 500);")
+        
+        resp = self.send_query("CREATE INDEX idx_hash ON hash_test (val) USING HASH;")
+        self.assertIn("OK", resp)
+        
+        # Explain should show IndexScan
+        resp = self.send_query("EXPLAIN SELECT * FROM hash_test WHERE val = 200;")
+        self.assertIn("IndexScan", resp)
+        
+        # Execution should work
+        resp = self.send_query("SELECT * FROM hash_test WHERE val = 200;")
+        self.assertIn("200", resp)
+        self.assertNotIn("300", resp)
+
+    def test_08_multiple_order_by(self):
+        resp = self.send_query("CREATE TABLE order_test (id INT, cat INT);")
+        self.send_query("INSERT INTO order_test VALUES (1, 10);")
+        self.send_query("INSERT INTO order_test VALUES (2, 20);")
+        self.send_query("INSERT INTO order_test VALUES (3, 10);")
+        self.send_query("INSERT INTO order_test VALUES (4, 20);")
+        
+        resp = self.send_query("SELECT * FROM order_test ORDER BY cat DESC, id ASC;")
+        self.assertIn("2", resp)
+        self.assertIn("4", resp)
+        self.assertIn("1", resp)
+        self.assertIn("3", resp)
+        
+        # Test order
+        idx_4 = resp.find("4")
+        idx_1 = resp.find("1")
+        self.assertTrue(idx_4 < idx_1)
 
 if __name__ == '__main__':
     unittest.main()

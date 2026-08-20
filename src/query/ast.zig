@@ -137,6 +137,16 @@ pub const Cte = struct {
     statement: *Statement,
 };
 
+pub const IndexType = enum {
+    btree,
+    hash,
+};
+
+pub const OrderByExpr = struct {
+    column: []const u8,
+    is_desc: bool,
+};
+
 pub const StatementType = enum {
     create_table,
     create_index,
@@ -155,7 +165,7 @@ pub const StatementType = enum {
 
 pub const Statement = union(StatementType) {
     create_table: struct { table_name: []const u8, columns: []const ColumnDef },
-    create_index: struct { index_name: []const u8, table_name: []const u8, column_name: []const u8 },
+    create_index: struct { index_name: []const u8, table_name: []const u8, column_name: []const u8, index_type: IndexType },
     drop_table: struct { table_name: []const u8 },
     alter_table: struct { table_name: []const u8, action: AlterAction },
     insert: struct { table_name: []const u8, values: []const Value },
@@ -169,8 +179,7 @@ pub const Statement = union(StatementType) {
         join_condition: ?Expression,
         condition: ?Expression,
         group_by: ?[]const u8, // single column group by for now
-        order_by: ?[]const u8,
-        is_desc: bool,
+        order_by: ?[]const OrderByExpr,
         limit: ?usize,
         offset: ?usize,
     },

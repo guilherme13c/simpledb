@@ -57,6 +57,10 @@ pub const TokenType = enum {
     KeywordFull,
     KeywordOuter,
     KeywordNull,
+    KeywordUsing,
+    KeywordHash,
+    KeywordBtree,
+    KeywordHaving,
     Identifier,
     Number,
     String,
@@ -188,6 +192,7 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "COLUMN")) return .{ .token_type = .KeywordColumn, .text = text };
             if (case_insensitive_eq(text, "TO")) return .{ .token_type = .KeywordTo, .text = text };
             if (case_insensitive_eq(text, "CREATE")) return .{ .token_type = .KeywordCreate, .text = text };
+            if (case_insensitive_eq(text, "INDEX")) return .{ .token_type = .KeywordIndex, .text = text };
             if (case_insensitive_eq(text, "TABLE")) return .{ .token_type = .KeywordTable, .text = text };
             if (case_insensitive_eq(text, "DROP")) return .{ .token_type = .KeywordDrop, .text = text };
             if (case_insensitive_eq(text, "INSERT")) return .{ .token_type = .KeywordInsert, .text = text };
@@ -237,6 +242,10 @@ pub const Lexer = struct {
             if (case_insensitive_eq(text, "FULL")) return .{ .token_type = .KeywordFull, .text = text };
             if (case_insensitive_eq(text, "OUTER")) return .{ .token_type = .KeywordOuter, .text = text };
             if (case_insensitive_eq(text, "NULL")) return .{ .token_type = .KeywordNull, .text = text };
+            if (case_insensitive_eq(text, "USING")) return .{ .token_type = .KeywordUsing, .text = text };
+            if (case_insensitive_eq(text, "HASH")) return .{ .token_type = .KeywordHash, .text = text };
+            if (case_insensitive_eq(text, "BTREE")) return .{ .token_type = .KeywordBtree, .text = text };
+            if (case_insensitive_eq(text, "HAVING")) return .{ .token_type = .KeywordHaving, .text = text };
             
             return .{ .token_type = .Identifier, .text = text };
         }

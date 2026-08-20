@@ -647,10 +647,10 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
         var base_executor: exec.Executor = .{ .seq_scan = &seq };
 
         // Order by ID DESC
+        const ob_exprs = [_]ast_mod.OrderByExpr{ .{ .column = "id", .is_desc = true } };
         var order_by_exec = exec.OrderByExecutor{
             .child = &base_executor,
-            .order_by_col = "id",
-            .is_desc = true,
+            .order_by_exprs = &ob_exprs,
             .schema = table.schema,
             .allocator = std.testing.allocator,
         };
@@ -947,7 +947,7 @@ test "Secondary Index" {
     try server.execute_statement(.{ .insert = .{ .table_name = "users", .values = &[_]@import("query/ast.zig").Value{ .{ .int = 3 }, .{ .varchar = "charlie" }, .{ .int = 30 } } } }, null, null, null);
     
     // CREATE INDEX
-    try server.execute_statement(.{ .create_index = .{ .index_name = "idx_age", .table_name = "users", .column_name = "age" } }, null, null, null);
+    try server.execute_statement(.{ .create_index = .{ .index_name = "idx_age", .table_name = "users", .column_name = "age", .index_type = .btree } }, null, null, null);
 
     const cond = @import("query/ast.zig").Expression{
         .compare = .{ .column = "age", .op = .eq, .value = .{ .int = 30 } }
@@ -962,7 +962,6 @@ test "Secondary Index" {
         .join_condition = null,
         .group_by = null,
         .order_by = null,
-        .is_desc = false,
         .limit = null,
         .offset = null,
     } }, null, null, null);

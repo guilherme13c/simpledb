@@ -91,10 +91,23 @@ pub const Parser = struct {
             const col_name = self.current_token.text;
             self.advance();
             try self.match(.RParen);
-            
+            var index_type = ast.IndexType.btree;
+            if (self.current_token.token_type == .KeywordUsing) {
+                self.advance();
+                if (self.current_token.token_type == .KeywordHash) {
+                    index_type = .hash;
+                    self.advance();
+                } else if (self.current_token.token_type == .KeywordBtree) {
+                    index_type = .btree;
+                    self.advance();
+                } else {
+                    return error.UnexpectedToken;
+                }
+            }
+
             if (self.current_token.token_type == .Semicolon) self.advance();
 
-            return .{ .create_index = .{ .index_name = index_name, .table_name = table_name, .column_name = col_name } };
+            return .{ .create_index = .{ .index_name = index_name, .table_name = table_name, .column_name = col_name, .index_type = index_type } };
         }
         
         try self.match(.KeywordTable);
@@ -459,22 +472,36 @@ pub const Parser = struct {
             self.advance();
         }
 
-        var order_by: ?[]const u8 = null;
-        var is_desc = false;
+        var order_by: ?[]ast.OrderByExpr = null;
         if (self.current_token.token_type == .KeywordOrder) {
             self.advance();
             try self.match(.KeywordBy);
             
-            if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
-            order_by = self.current_token.text;
-            self.advance();
+            var ob_list = std.ArrayList(ast.OrderByExpr).empty;
+            errdefer ob_list.deinit(self.allocator);
             
-            if (self.current_token.token_type == .KeywordDesc) {
-                is_desc = true;
+            while (true) {
+                if (self.current_token.token_type != .Identifier) return error.UnexpectedToken;
+                const col = self.current_token.text;
                 self.advance();
-            } else if (self.current_token.token_type == .KeywordAsc) {
-                self.advance();
+                
+                var desc = false;
+                if (self.current_token.token_type == .KeywordDesc) {
+                    desc = true;
+                    self.advance();
+                } else if (self.current_token.token_type == .KeywordAsc) {
+                    self.advance();
+                }
+                
+                try ob_list.append(self.allocator, .{ .column = col, .is_desc = desc });
+                
+                if (self.current_token.token_type == .Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
+            order_by = try ob_list.toOwnedSlice(self.allocator);
         }
         
         var limit: ?usize = null;
@@ -497,7 +524,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        return .{ .select = .{ .columns = columns, .aggregates = aggregates, .window_functions = window_functions, .table_name = table_name, .join_type = join_type, .join_table = join_table, .join_condition = join_condition, .condition = condition, .group_by = group_by, .order_by = order_by, .is_desc = is_desc, .limit = limit, .offset = offset } };
+        return .{ .select = .{ .columns = columns, .aggregates = aggregates, .window_functions = window_functions, .table_name = table_name, .join_type = join_type, .join_table = join_table, .join_condition = join_condition, .condition = condition, .group_by = group_by, .order_by = order_by, .limit = limit, .offset = offset } };
     }
 
     fn parse_delete(self: *Parser) !ast.Statement {
@@ -820,12 +847,13 @@ test "parse select order limit" {
     try std.testing.expect(stmt == .select);
     try std.testing.expectEqualStrings("users", stmt.select.table_name);
     try std.testing.expect(stmt.select.order_by != null);
-    try std.testing.expectEqualStrings("age", stmt.select.order_by.?);
-    try std.testing.expect(stmt.select.is_desc == true);
+    try std.testing.expectEqualStrings("age", stmt.select.order_by.?[0].column);
+    try std.testing.expect(stmt.select.order_by.?[0].is_desc == true);
     try std.testing.expect(stmt.select.limit != null);
     try std.testing.expectEqual(@as(usize, 10), stmt.select.limit.?);
     try std.testing.expect(stmt.select.offset != null);
     try std.testing.expectEqual(@as(usize, 5), stmt.select.offset.?);
+    std.testing.allocator.free(stmt.select.order_by.?);
 }
 
 test "parse update" {

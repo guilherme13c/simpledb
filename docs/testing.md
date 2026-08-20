@@ -46,7 +46,18 @@ The testing suite focuses heavily on validating the correctness and thread-safet
    - **What:** Tests dynamic creation of secondary indexes via `CREATE INDEX`, automatic synchronous indexing on `.insert` and `.delete`, and execution-layer point-lookup optimizations.
    - **Why:** Validates that adding new indexes properly backfills from heap data and that the query executor correctly leverages them over a sequential scan.
 
-## What is NOT Covered (And Why)
+## Integration Testing (Python Suite)
 
-1. **Network / TCP Server (`server.zig`)**
-   - **Why:** Creating mock TCP clients and managing event-loop lifecycles in unit tests introduces network flakiness. The server is manually tested using the CLI/REPL pipe.
+We have a comprehensive integration testing suite written in Python (`tests/integration/`) that connects to the database server over TCP. This ensures end-to-end correctness.
+Run the suite using:
+```bash
+./run_all_tests.sh
+```
+
+**What the integration suite covers:**
+- **TCP Server (`server.zig`)**: Validates that the event-loop lifecycle, connection handling, and client-server protocol work flawlessly.
+- **ACID Properties (`test_properties.py`, `test_crash_recovery.py`)**: Tests read-your-writes, concurrent transaction isolation (repeatable reads), lock timeouts, and uncommitted transaction ARIES undo-pass recovery.
+- **Advanced SQL (`test_full_sql.py`, `test_outer_join.py`, `test_subquery.py`, `test_cte.py`)**: End-to-end tests for JOINs, CTEs, Window functions, aggregations, Subqueries, and GROUP BY.
+- **Buffer Pool Behavior (`test_buffer_pool.py`)**: Forcibly exceeds memory thresholds to trigger the clock-sweep eviction logic and prove that dirty pages flush to disk without corruption.
+- **Concurrency Edge Cases (`test_concurrency_edge_cases.py`)**: Ensures that deadlocks are safely detected and aborted, and that concurrent inserts/updates on the exact same row don't lose data.
+

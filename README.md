@@ -26,9 +26,11 @@ zig build test
 
 **Running Integration Tests (Network, MVCC & ACID compliance):**
 ```bash
-# In one terminal, start the server:
-zig build run
-# In another terminal, run the test suite:
+# You can run the entire integration test suite (with proper timeout and lifecycle management):
+./run_all_tests.sh
+
+# Or you can run an individual Python integration test:
+zig build
 python3 tests/integration/test_server.py
 ```
 

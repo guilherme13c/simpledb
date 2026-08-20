@@ -127,6 +127,7 @@ pub const BufferManager = struct {
                 if (batch_count >= 128) break;
                 if (f.state == .VALID and f.is_dirty and f.pin_count == 0) {
                     f.pin_count += 1; // Pin it so it doesn't get evicted while flushing
+                    f.io_mutex.lockUncancelable(io);
                     batch_page_ids[batch_count] = f.page_id.?;
                     batch_pages[batch_count] = &f.page;
                     batch_frame_ids[batch_count] = f.frame_id;
@@ -156,6 +157,7 @@ pub const BufferManager = struct {
                     var f = &self.frames[frame_id];
                     f.is_dirty = false;
                     f.pin_count -= 1;
+                    f.io_mutex.unlock(io);
                 }
                 self.pool_mutex.unlock(io);
             }

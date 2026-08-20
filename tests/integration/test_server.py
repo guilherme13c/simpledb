@@ -18,7 +18,7 @@ class TestSimpleDBServer(unittest.TestCase):
         
         # Start the simpledb server
         cls.server_proc = subprocess.Popen(
-            ["zig", "build", "run"],
+            ["./zig-out/bin/simpledb"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True

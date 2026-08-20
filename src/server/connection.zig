@@ -100,7 +100,8 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
             } else if (stmt == .commit) {
                 if (in_transaction) {
                     if (server.catalog.buffer_manager.log_manager) |lm| {
-                        _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                        const lsn = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                        lm.flush(lsn) catch {};
                     }
                     undo.clear_undo_stack(&undo_stack, server.allocator);
                     server.lock_manager.unlock_all(txn_ctx.?.txn_id);
@@ -165,7 +166,8 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
 
             if (did_lock_exclusive_now) {
                 if (server.catalog.buffer_manager.log_manager) |lm| {
-                    _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                    const lsn = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                    lm.flush(lsn) catch {};
                 }
                 undo.clear_undo_stack(&undo_stack, server.allocator);
                 server.lock_manager.unlock_all(txn_ctx.?.txn_id);
@@ -174,7 +176,8 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 server.active_txn_rwlock.unlock(server.io);
             } else if (did_lock_shared_now) {
                 if (server.catalog.buffer_manager.log_manager) |lm| {
-                    _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                    const lsn = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;
+                    lm.flush(lsn) catch {};
                 }
                 undo.clear_undo_stack(&undo_stack, server.allocator);
                 server.lock_manager.unlock_all(txn_ctx.?.txn_id);

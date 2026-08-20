@@ -80,8 +80,33 @@ pub const LockManager = struct {
         try queue.requests.append(self.allocator, .{ .txn_id = txn_id, .mode = .shared, .granted = false });
         try self.add_txn_lock(txn_id, resource_id);
 
+        var attempts: usize = 0;
         while (!self.can_grant_lock(queue, txn_id, .shared)) {
-            queue.cv.waitUncancelable(self.io, &self.mutex);
+            self.mutex.unlock(self.io);
+            const timeout = std.Io.Timeout{
+                .duration = .{
+                    .raw = .{ .nanoseconds = 10 * std.time.ns_per_ms },
+                    .clock = .awake,
+                },
+            };
+            timeout.sleep(self.io) catch {};
+            attempts += 1;
+            self.mutex.lockUncancelable(self.io);
+            if (attempts > 100) {
+                self.unlock_internal(txn_id, resource_id);
+                if (self.txn_locks.getPtr(txn_id)) |list| {
+                    var i: usize = 0;
+                    while (i < list.items.len) {
+                        if (list.items[i] == resource_id) {
+                            _ = list.orderedRemove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                self.mutex.unlock(self.io);
+                return error.DeadlockDetected;
+            }
         }
 
         // Grant the lock
@@ -119,8 +144,33 @@ pub const LockManager = struct {
             try self.add_txn_lock(txn_id, resource_id);
         }
 
+        var attempts: usize = 0;
         while (!self.can_grant_lock(queue, txn_id, .exclusive)) {
-            queue.cv.waitUncancelable(self.io, &self.mutex);
+            self.mutex.unlock(self.io);
+            const timeout = std.Io.Timeout{
+                .duration = .{
+                    .raw = .{ .nanoseconds = 10 * std.time.ns_per_ms },
+                    .clock = .awake,
+                },
+            };
+            timeout.sleep(self.io) catch {};
+            attempts += 1;
+            self.mutex.lockUncancelable(self.io);
+            if (attempts > 100) {
+                self.unlock_internal(txn_id, resource_id);
+                if (self.txn_locks.getPtr(txn_id)) |list| {
+                    var i: usize = 0;
+                    while (i < list.items.len) {
+                        if (list.items[i] == resource_id) {
+                            _ = list.orderedRemove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                self.mutex.unlock(self.io);
+                return error.DeadlockDetected;
+            }
         }
 
         // Grant the lock

@@ -1,21 +1,50 @@
 import socket
-import time
+import unittest
+import os
+import shutil
 import subprocess
+import time
 
-def run_test():
-    server_process = subprocess.Popen(["zig", "build", "run"])
-
-    try:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        for i in range(15):
+class TestUpdate(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if os.path.exists("data"):
+            shutil.rmtree("data")
+        os.makedirs("data", exist_ok=True)
+        
+        cls.server_proc = subprocess.Popen(
+            ["./zig-out/bin/simpledb"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        connected = False
+        for _ in range(30):
             try:
-                client.connect(("127.0.0.1", 8080))
-                break
-            except ConnectionRefusedError:
-                time.sleep(1)
-        else:
-            raise Exception("Failed to connect to server")
+                with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+                    connected = True
+                    break
+            except (ConnectionRefusedError, socket.timeout):
+                time.sleep(0.5)
+                
+        if not connected:
+            cls.server_proc.kill()
+            out, err = cls.server_proc.communicate()
+            raise Exception(f"Server failed to start. Stdout: {out}\nStderr: {err}")
 
+    @classmethod
+    def tearDownClass(cls):
+        cls.server_proc.kill()
+        try:
+            cls.server_proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            cls.server_proc.kill()
+
+    def test_update(self):
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(("127.0.0.1", 8080))
+        
         commands = [
             "CREATE TABLE users (id int, name varchar, age int);",
             "INSERT INTO users VALUES (1, 'Alice', 30);",
@@ -37,9 +66,7 @@ def run_test():
             response = client.recv(4096).decode()
             print(f"Response:\n{response}")
 
-    finally:
-        server_process.terminate()
-        server_process.wait()
+        client.close()
 
 if __name__ == "__main__":
-    run_test()
+    unittest.main()

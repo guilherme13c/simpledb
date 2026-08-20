@@ -1,6 +1,9 @@
 import socket
 import time
 import unittest
+import os
+import shutil
+import subprocess
 
 def send_query(sock, query):
     sock.sendall(query.encode('utf-8'))
@@ -8,6 +11,41 @@ def send_query(sock, query):
     return response
 
 class TestSubquery(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if os.path.exists("data"):
+            shutil.rmtree("data")
+        os.makedirs("data", exist_ok=True)
+        
+        cls.server_proc = subprocess.Popen(
+            ["./zig-out/bin/simpledb"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        connected = False
+        for _ in range(30):
+            try:
+                with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+                    connected = True
+                    break
+            except (ConnectionRefusedError, socket.timeout):
+                time.sleep(0.5)
+                
+        if not connected:
+            cls.server_proc.kill()
+            out, err = cls.server_proc.communicate()
+            raise Exception(f"Server failed to start. Stdout: {out}\nStderr: {err}")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server_proc.kill()
+        try:
+            cls.server_proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            cls.server_proc.kill()
+
     def test_scalar_subquery(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(('127.0.0.1', 8080))

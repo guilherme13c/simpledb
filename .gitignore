@@ -7,3 +7,4 @@ profiling/
 *.log
 scratch/
 test_*.zig
+__pycache__/

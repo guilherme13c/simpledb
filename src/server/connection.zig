@@ -28,7 +28,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .abort, 0, 0, &[_]u8{}) catch 0;
             }
             server.end_txn(&txn_ctx.?);
-            server.active_txn_rwlock.unlock(server.io);
+            server.active_txn_rwlock.unlockShared(server.io);
         }
     }
 
@@ -238,7 +238,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                     server.lock_manager.unlock_all(txn_ctx.?.txn_id);
                     if (txn_ctx) |*ctx| server.end_txn(ctx);
                     txn_ctx = null;
-                    server.active_txn_rwlock.unlock(server.io);
+                    server.active_txn_rwlock.unlockShared(server.io);
                 } else if (did_lock_shared_now) {
                     if (server.catalog.buffer_manager.log_manager) |lm| {
                         _ = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .abort, 0, 0, &[_]u8{}) catch 0;
@@ -262,7 +262,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 server.lock_manager.unlock_all(txn_ctx.?.txn_id);
                 if (txn_ctx) |*ctx| server.end_txn(ctx);
                 txn_ctx = null;
-                server.active_txn_rwlock.unlock(server.io);
+                server.active_txn_rwlock.unlockShared(server.io);
             } else if (did_lock_shared_now) {
                 if (server.catalog.buffer_manager.log_manager) |lm| {
                     const lsn = lm.append_record(txn_ctx.?.txn_id, txn_ctx.?.prev_lsn, .commit, 0, 0, &[_]u8{}) catch 0;

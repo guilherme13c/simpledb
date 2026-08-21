@@ -13,6 +13,7 @@ pub fn main(init: std.process.Init) !void {
 
 
 var cli_mode = false;
+    var data_dir: []const u8 = "data";
     var port: u16 = 8080;
     var replica_of: ?[]const u8 = null;
     var shard_id: u32 = 0;
@@ -42,6 +43,10 @@ var cli_mode = false;
             if (args_it.next()) |s_arg| {
                 shard_id = std.fmt.parseInt(u32, s_arg, 10) catch 0;
             }
+        } else if (std.mem.eql(u8, arg, "--data-dir")) {
+            if (args_it.next()) |d_arg| {
+                data_dir = d_arg;
+            }
         } else if (std.mem.eql(u8, arg, "--num-shards")) {
             if (args_it.next()) |n_arg| {
                 num_shards = std.fmt.parseInt(u32, n_arg, 10) catch 1;
@@ -56,14 +61,14 @@ var cli_mode = false;
     const io = threaded_io.io();
 
     var db_filename_buf: [128]u8 = undefined;
-    const db_filename = try std.fmt.bufPrint(&db_filename_buf, "data/simple_{d}.db", .{port});
+    const db_filename = try std.fmt.bufPrint(&db_filename_buf, "{s}/simple_{d}.db", .{ data_dir, port });
     var storage_mgr = try sm.StorageManager.init(allocator, io, db_filename);
     try storage_mgr.start();
     defer storage_mgr.deinit();
 
     const dir = std.Io.Dir.cwd();
     var wal_filename_buf: [128]u8 = undefined;
-    const wal_filename = try std.fmt.bufPrint(&wal_filename_buf, "data/simpledb_{d}.wal", .{port});
+    const wal_filename = try std.fmt.bufPrint(&wal_filename_buf, "{s}/simpledb_{d}.wal", .{ data_dir, port });
     const wal_file = try std.Io.Dir.createFile(dir, io, wal_filename, .{ .read = true, .truncate = false });
     var log_mgr = try LogManager.init(io, wal_file);
 

@@ -17,7 +17,7 @@ pub const RaftGroup = struct {
     current_term: u64,
     voted_for: ?[]const u8,
     config: @import("raft_config.zig").ClusterConfig,
-    votes_received: u32,
+    votes_received_from: std.StringHashMap(void),
     last_heartbeat_ms: std.atomic.Value(i64),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, gossip: *@import("gossip.zig").GossipProtocol, group_id: u32) RaftGroup {
@@ -33,7 +33,7 @@ pub const RaftGroup = struct {
             .current_term = 0,
             .voted_for = null,
             .config = .{ .old_members = &[_][]const u8{}, .new_members = null, .state = .Cold },
-            .votes_received = 0,
+            .votes_received_from = std.StringHashMap(void).init(allocator),
             .last_heartbeat_ms = std.atomic.Value(i64).init(get_time_ms()),
         };
     }
@@ -77,7 +77,7 @@ pub const RaftGroup = struct {
             }
         } else if (std.mem.eql(u8, header, "RAFT_VOTE_RES")) {
             const term_str = it.next() orelse return;
-            _ = it.next() orelse return; // voter
+            const sender = it.next() orelse return; // voter
             const vote = it.next() orelse return;
             const term = std.fmt.parseInt(u64, term_str, 10) catch return;
 
@@ -86,7 +86,7 @@ pub const RaftGroup = struct {
                 defer self.mutex.unlock(self.io);
 
                 if (self.role == .Candidate and term == self.current_term) {
-                    self.votes_received += 1;
+                    self.votes_received_from.put(sender, {}) catch {};
 
                     var active_peers = std.ArrayList([]const u8).empty;
                     self.gossip.get_active_peers(&active_peers) catch return;
@@ -96,11 +96,10 @@ pub const RaftGroup = struct {
                     }
 
                     const cluster_size = active_peers.items.len + 1;
-                    const majority = (cluster_size / 2) + 1;
 
-                    if (self.votes_received >= majority) {
+                    if (self.check_election_won(cluster_size)) {
                         self.role = .Leader;
-                        std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received, cluster_size });
+                        std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received_from.count(), cluster_size });
                     }
                 }
             }
@@ -174,6 +173,30 @@ pub const RaftGroup = struct {
         } else |_| {}
     }
 
+    
+    fn check_election_won(self: *RaftGroup, cluster_size_fallback: usize) bool {
+        var old_votes: usize = 0;
+        if (self.config.old_members.len > 0) {
+            for (self.config.old_members) |m| {
+                if (self.votes_received_from.contains(m)) old_votes += 1;
+            }
+            if (old_votes < (self.config.old_members.len / 2) + 1) return false;
+        } else {
+            if (self.votes_received_from.count() < (cluster_size_fallback / 2) + 1) return false;
+        }
+
+        if (self.config.state == .ColdNew) {
+            var new_votes: usize = 0;
+            if (self.config.new_members) |nm| {
+                for (nm) |m| {
+                    if (self.votes_received_from.contains(m)) new_votes += 1;
+                }
+                if (new_votes < (nm.len / 2) + 1) return false;
+            }
+        }
+        return true;
+    }
+
     fn election_loop(self: *RaftGroup) void {
         var rand = std.Random.DefaultPrng.init(@as(u64, @intCast(get_time_ms())));
 
@@ -205,7 +228,8 @@ pub const RaftGroup = struct {
             if (time_since_heartbeat >= timeout_ms) {
                 self.role = .Candidate;
                 self.current_term += 1;
-                self.votes_received = 1;
+                self.votes_received_from.clearRetainingCapacity();
+                self.votes_received_from.put(self.gossip.server_address, {}) catch {};
                 if (self.voted_for) |v| self.allocator.free(v);
                 self.voted_for = self.allocator.dupe(u8, self.gossip.server_address) catch null;
                 self.last_heartbeat_ms.store(now, .release);
@@ -219,11 +243,10 @@ pub const RaftGroup = struct {
                 };
 
                 const cluster_size = active_peers.items.len + 1;
-                const majority = (cluster_size / 2) + 1;
 
-                if (self.votes_received >= majority) {
+                if (self.check_election_won(cluster_size)) {
                     self.role = .Leader;
-                    std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received, cluster_size });
+                    std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received_from.count(), cluster_size });
                     for (active_peers.items) |p| self.allocator.free(p);
                     active_peers.deinit(self.allocator);
                     self.mutex.unlock(self.io);
@@ -280,8 +303,42 @@ pub const RaftGroup = struct {
                 
                 // For now, we just send a heartbeat-like append entries (no payload yet)
                 // In Phase 2, we will read the WAL payload and append it here
-                var buf: [256]u8 = undefined;
-                if (std.fmt.bufPrint(&buf, "RAFT_APPEND_ENTRIES {d} {s} {d} 0\n", .{term, self.gossip.server_address, prev_lsn})) |msg| {
+                var b64_payload: []const u8 = "";
+                var b64_buf: ?[]u8 = null;
+                defer if (b64_buf) |b| self.allocator.free(b);
+                
+                if (current_lsn > prev_lsn) {
+                    if (server_ptr.catalog.buffer_manager.log_manager) |lm| {
+                        var header_buf: [@sizeOf(@import("../storage/wal/log_record.zig").LogRecordHeader)]u8 = undefined;
+                        if (lm.wal_file.readPositional(server_ptr.io, &[_][]u8{&header_buf}, prev_lsn) catch 0 == header_buf.len) {
+                            const log_header = std.mem.bytesAsValue(@import("../storage/wal/log_record.zig").LogRecordHeader, &header_buf);
+                            if (log_header.length >= header_buf.len) {
+                                const payload_len = log_header.length - header_buf.len;
+                                const payload_buf = self.allocator.alloc(u8, payload_len) catch continue;
+                                defer self.allocator.free(payload_buf);
+                                
+                                var ok = true;
+                                if (payload_len > 0) {
+                                    ok = (lm.wal_file.readPositional(server_ptr.io, &[_][]u8{payload_buf}, prev_lsn + header_buf.len) catch 0 == payload_len);
+                                }
+                                
+                                if (ok) {
+                                    const total_buf = self.allocator.alloc(u8, log_header.length) catch continue;
+                                    defer self.allocator.free(total_buf);
+                                    @memcpy(total_buf[0..header_buf.len], &header_buf);
+                                    if (payload_len > 0) @memcpy(total_buf[header_buf.len..], payload_buf);
+                                    
+                                    const b64_len = std.base64.standard.Encoder.calcSize(total_buf.len);
+                                    b64_buf = self.allocator.alloc(u8, b64_len) catch continue;
+                                    b64_payload = std.base64.standard.Encoder.encode(b64_buf.?, total_buf);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                var buf: [131072]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "RAFT_APPEND_ENTRIES {d} {s} {d} 0 {s}\n", .{term, self.gossip.server_address, prev_lsn, b64_payload})) |msg| {
                     server_ptr.active_txn_mutex.lockUncancelable(server_ptr.io);
                     var stream: ?std.Io.net.Stream = null;
                     if (server_ptr.raft_connections.get(peer)) |s| {
@@ -325,10 +382,55 @@ pub const RaftGroup = struct {
             const leader_id = it.next() orelse return;
             const prev_lsn_str = it.next() orelse return;
             const prev_term_str = it.next() orelse return;
+            const b64_payload = it.next() orelse "";
             
             const term = std.fmt.parseInt(u64, term_str, 10) catch return;
             const prev_lsn = std.fmt.parseInt(u32, prev_lsn_str, 10) catch return;
             _ = prev_term_str;
+            
+            const server_ptr: *@import("server.zig").Server = @ptrCast(@alignCast(self.server.?));
+            
+            if (b64_payload.len > 0) {
+                var total_buf = self.allocator.alloc(u8, std.base64.standard.Decoder.calcSizeForSlice(b64_payload) catch 0) catch return;
+                defer self.allocator.free(total_buf);
+                
+                std.base64.standard.Decoder.decode(total_buf, b64_payload) catch return;
+                
+                if (server_ptr.catalog.buffer_manager.log_manager) |lm| {
+                    lm.mutex.lockUncancelable(server_ptr.io);
+                    defer lm.mutex.unlock(server_ptr.io);
+                    
+                    const header_len = @sizeOf(@import("../storage/wal/log_record.zig").LogRecordHeader);
+                    if (total_buf.len >= header_len) {
+                        const header_buf = total_buf[0..header_len];
+                        const log_header = std.mem.bytesAsValue(@import("../storage/wal/log_record.zig").LogRecordHeader, header_buf);
+                        
+                        _ = lm.wal_file.writePositional(server_ptr.io, &[_][]const u8{header_buf}, log_header.lsn) catch {};
+                        if (total_buf.len > header_len) {
+                            _ = lm.wal_file.writePositional(server_ptr.io, &[_][]const u8{total_buf[header_len..]}, log_header.lsn + header_len) catch {};
+                        }
+                        
+                        lm.current_offset = log_header.lsn + log_header.length;
+                        lm.global_lsn.store(lm.current_offset, .release);
+                        
+                        if (log_header.record_type == .logical_insert) {
+                            // Apply to index
+                            if (log_header.page_id == 0) {
+                                server_ptr.catalog.load_sys_tables() catch {};
+                            } else {
+                                var catalog_it = server_ptr.catalog.tables.iterator();
+                                while (catalog_it.next()) |kv| {
+                                    if (kv.value_ptr.*.btree.root_page_id == log_header.page_id) {
+                                        const key = std.mem.readInt(u64, total_buf[header_len..header_len+8][0..8], .little);
+                                        const data = total_buf[header_len+8..];
+                                        _ = kv.value_ptr.*.insert(null, key, data) catch {};
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -340,7 +442,6 @@ pub const RaftGroup = struct {
                     std.debug.print("[RaftGroup {d}] Acknowledged new leader: {s} for term {d}\n", .{ self.group_id, leader_id, term });
                 }
                 
-                const server_ptr: *@import("server.zig").Server = @ptrCast(@alignCast(self.server.?));
                 if (server_ptr.leader_address) |la| {
                     if (!std.mem.eql(u8, la, leader_id)) {
                         self.allocator.free(la);

@@ -10,7 +10,7 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
     defer stream.close(server.io);
     std.debug.print("Handled connection successfully.\n", .{});
 
-    var msg_buf: [1024]u8 = undefined;
+    var msg_buf: [131072]u8 = undefined;
     var write_buf: [1024]u8 = undefined;
     var writer = stream.writer(server.io, &write_buf);
 
@@ -32,14 +32,26 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
         }
     }
 
+    var msg_len: usize = 0;
     while (true) {
-        const bytes_read = std.posix.read(stream.socket.handle, &msg_buf) catch break;
+        if (msg_len == msg_buf.len) break;
+        const bytes_read = std.posix.read(stream.socket.handle, msg_buf[msg_len..]) catch break;
         if (bytes_read == 0) break;
-        const msg = msg_buf[0..bytes_read];
+        msg_len += bytes_read;
 
-        
-        var line_it = std.mem.tokenizeAny(u8, msg, "\r\n");
-        while (line_it.next()) |line| {
+        while (std.mem.indexOfAny(u8, msg_buf[0..msg_len], "\r\n")) |idx| {
+            var consume = idx + 1;
+            if (consume < msg_len and msg_buf[consume] == '\n' and msg_buf[idx] == '\r') {
+                consume += 1;
+            }
+            const line_slice = msg_buf[0..idx];
+            const line = server.allocator.dupe(u8, line_slice) catch break;
+            defer server.allocator.free(line);
+            
+            std.mem.copyForwards(u8, msg_buf[0 .. msg_len - consume], msg_buf[consume..msg_len]);
+            msg_len -= consume;
+            
+            if (line.len == 0) continue;
             if (std.mem.startsWith(u8, line, "RAFT_")) {
                 if (server.raft) |raft| {
                     raft.handle_message_tcp(line, &writer.interface) catch |err| {

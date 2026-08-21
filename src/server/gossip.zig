@@ -15,7 +15,7 @@ pub const GossipProtocol = struct {
     mutex: std.Io.Mutex,
     is_running: std.atomic.Value(bool),
     socket: ?std.Io.net.Socket = null,
-    raft: ?*@import("raft.zig").Raft = null,
+    raft: ?*@import("raft.zig").RaftGroup = null,
     shard_id: u32,
     num_shards: u32,
     server_ptr: ?*anyopaque = null,
@@ -63,7 +63,7 @@ pub const GossipProtocol = struct {
 
     pub fn start(self: *GossipProtocol, server: *anyopaque) !void {
         self.server_ptr = server;
-        if (self.raft) |r| { r.server = server; try r.start(); }
+        if (self.raft) |r| { r.server = server; try r.start(server); }
         self.is_running.store(true, .release);
 
         var ip4 = try std.Io.net.IpAddress.parseIp4("127.0.0.1", self.gossip_port);

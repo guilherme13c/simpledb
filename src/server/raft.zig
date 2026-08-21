@@ -4,7 +4,8 @@ const get_time_ms = @import("gossip.zig").get_time_ms;
 
 pub const Role = enum { Follower, Candidate, Leader };
 
-pub const Raft = struct {
+pub const RaftGroup = struct {
+    group_id: u32,
     allocator: std.mem.Allocator,
     server: ?*anyopaque,
     io: std.Io,
@@ -15,13 +16,15 @@ pub const Raft = struct {
     role: Role,
     current_term: u64,
     voted_for: ?[]const u8,
+    config: @import("raft_config.zig").ClusterConfig,
     votes_received: u32,
     last_heartbeat_ms: std.atomic.Value(i64),
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, gossip: *GossipProtocol) Raft {
-        return Raft{
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, gossip: *@import("gossip.zig").GossipProtocol, group_id: u32) RaftGroup {
+        return RaftGroup{
             .allocator = allocator,
             .server = null,
+            .group_id = group_id,
             .io = io,
             .gossip = gossip,
             .mutex = .init,
@@ -29,22 +32,26 @@ pub const Raft = struct {
             .role = .Follower,
             .current_term = 0,
             .voted_for = null,
+            .config = .{ .old_members = &[_][]const u8{}, .new_members = null, .state = .Cold },
             .votes_received = 0,
             .last_heartbeat_ms = std.atomic.Value(i64).init(get_time_ms()),
         };
     }
 
-    pub fn deinit(self: *Raft) void {
+    pub fn deinit(self: *RaftGroup) void {
+        self.config.deinit(self.allocator);
         self.is_running.store(false, .release);
         if (self.voted_for) |v| self.allocator.free(v);
     }
 
-    pub fn start(self: *Raft) !void {
+    pub fn start(self: *RaftGroup, server: *anyopaque) !void {
+        self.server = server;
         self.is_running.store(true, .release);
+        _ = try std.Thread.spawn(.{}, append_entries_loop, .{self});
         _ = try std.Thread.spawn(.{}, election_loop, .{self});
     }
 
-    pub fn handle_message(self: *Raft, data: []const u8) !void {
+    pub fn handle_message(self: *RaftGroup, data: []const u8) !void {
         var it = std.mem.splitScalar(u8, data, ' ');
         const header = it.next() orelse return;
 
@@ -93,7 +100,7 @@ pub const Raft = struct {
 
                     if (self.votes_received >= majority) {
                         self.role = .Leader;
-                        std.debug.print("[Raft] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.current_term, self.votes_received, cluster_size });
+                        std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received, cluster_size });
                     }
                 }
             }
@@ -109,7 +116,7 @@ pub const Raft = struct {
                 if (term > self.current_term or self.role != .Follower) {
                     self.current_term = term;
                     self.role = .Follower;
-                    std.debug.print("[Raft] Node acknowledged new leader: {s} for term {d}\n", .{ leader_id, term });
+                    std.debug.print("[RaftGroup {d}] Node acknowledged new leader: {s} for term {d}\n", .{ self.group_id, leader_id, term });
                 }
 
                 // Update server's knowledge of leader
@@ -129,7 +136,7 @@ pub const Raft = struct {
         }
     }
 
-    fn send_to_peer(self: *Raft, peer_addr: []const u8, msg: []const u8) !void {
+    fn send_to_peer(self: *RaftGroup, peer_addr: []const u8, msg: []const u8) !void {
         const split = std.mem.indexOf(u8, peer_addr, ":") orelse return error.InvalidAddress;
         const ip = peer_addr[0..split];
         const port = try std.fmt.parseInt(u16, peer_addr[split + 1 ..], 10);
@@ -144,7 +151,7 @@ pub const Raft = struct {
         _ = std.os.linux.sendto(self.gossip.socket.?.handle, @ptrCast(msg.ptr), msg.len, 0, @ptrCast(&sa), @sizeOf(@TypeOf(sa)));
     }
 
-    fn broadcast_heartbeat_unlocked(self: *Raft) !void {
+    fn broadcast_heartbeat_unlocked(self: *RaftGroup) !void {
         var active_peers = std.ArrayList([]const u8).empty;
         defer {
             for (active_peers.items) |p| self.allocator.free(p);
@@ -167,7 +174,7 @@ pub const Raft = struct {
         } else |_| {}
     }
 
-    fn election_loop(self: *Raft) void {
+    fn election_loop(self: *RaftGroup) void {
         var rand = std.Random.DefaultPrng.init(@as(u64, @intCast(get_time_ms())));
 
         while (self.is_running.load(.acquire)) {
@@ -203,7 +210,7 @@ pub const Raft = struct {
                 self.voted_for = self.allocator.dupe(u8, self.gossip.server_address) catch null;
                 self.last_heartbeat_ms.store(now, .release);
 
-                std.debug.print("[Raft] Starting election for term {d}\n", .{self.current_term});
+                std.debug.print("[RaftGroup {d}] Starting election for term {d}\n", .{ self.group_id, self.current_term});
 
                 var active_peers = std.ArrayList([]const u8).empty;
                 self.gossip.get_active_peers(&active_peers) catch {
@@ -216,7 +223,7 @@ pub const Raft = struct {
 
                 if (self.votes_received >= majority) {
                     self.role = .Leader;
-                    std.debug.print("[Raft] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.current_term, self.votes_received, cluster_size });
+                    std.debug.print("[RaftGroup {d}] Node became Leader for term {d} with {d}/{d} votes\n", .{ self.group_id, self.current_term, self.votes_received, cluster_size });
                     for (active_peers.items) |p| self.allocator.free(p);
                     active_peers.deinit(self.allocator);
                     self.mutex.unlock(self.io);
@@ -242,4 +249,116 @@ pub const Raft = struct {
             self.mutex.unlock(self.io);
         }
     }
+
+    
+    fn append_entries_loop(self: *RaftGroup) void {
+        var next_index = std.StringHashMap(u32).init(self.allocator);
+        defer next_index.deinit();
+        
+        while (self.is_running.load(.acquire)) {
+            self.io.sleep(std.Io.Duration.fromSeconds(1), .awake) catch {};
+            if (!self.is_running.load(.acquire)) break;
+            
+            self.mutex.lockUncancelable(self.io);
+            const is_leader = (self.role == .Leader);
+            const term = self.current_term;
+            self.mutex.unlock(self.io);
+            
+            if (!is_leader) continue;
+            
+            var active_peers = std.ArrayList([]const u8).empty;
+            self.gossip.get_active_peers(&active_peers) catch continue;
+            
+            const server_ptr: *@import("server.zig").Server = @ptrCast(@alignCast(self.server.?));
+            var current_lsn: u32 = 0;
+            if (server_ptr.catalog.buffer_manager.log_manager) |lm| {
+                current_lsn = lm.global_lsn.load(.acquire);
+            }
+            
+            for (active_peers.items) |peer| {
+                const prev_lsn = next_index.get(peer) orelse 0;
+                
+                // For now, we just send a heartbeat-like append entries (no payload yet)
+                // In Phase 2, we will read the WAL payload and append it here
+                var buf: [256]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "RAFT_APPEND_ENTRIES {d} {s} {d} 0\n", .{term, self.gossip.server_address, prev_lsn})) |msg| {
+                    server_ptr.active_txn_mutex.lockUncancelable(server_ptr.io);
+                    var stream: ?std.Io.net.Stream = null;
+                    if (server_ptr.raft_connections.get(peer)) |s| {
+                        stream = s;
+                    } else {
+                        // Connect
+                        if (std.mem.indexOf(u8, peer, ":")) |split| {
+                            const ip = peer[0..split];
+                            if (std.fmt.parseInt(u16, peer[split + 1 ..], 10)) |port| {
+                                if (std.Io.net.IpAddress.parseIp4(ip, port)) |addr| {
+                                    if (addr.connect(self.io, .{ .mode = .stream })) |new_s| {
+                                        server_ptr.raft_connections.put(self.allocator.dupe(u8, peer) catch peer, new_s) catch {};
+                                        stream = new_s;
+                                    } else |_| {}
+                                } else |_| {}
+                            } else |_| {}
+                        }
+                    }
+                    server_ptr.active_txn_mutex.unlock(server_ptr.io);
+                    
+                    if (stream) |s| {
+                        var write_buf: [1024]u8 = undefined;
+                        var writer = s.writer(server_ptr.io, &write_buf);
+                        writer.interface.writeAll(msg) catch {};
+                        writer.interface.flush() catch {};
+                    }
+                } else |_| {}
+            }
+            
+            for (active_peers.items) |p| self.allocator.free(p);
+            active_peers.deinit(self.allocator);
+        }
+    }
+
+    pub fn handle_message_tcp(self: *RaftGroup, line: []const u8, writer: *std.Io.Writer) !void {
+        var it = std.mem.splitScalar(u8, line, ' ');
+        const header = it.next() orelse return;
+        
+        if (std.mem.eql(u8, header, "RAFT_APPEND_ENTRIES")) {
+            const term_str = it.next() orelse return;
+            const leader_id = it.next() orelse return;
+            const prev_lsn_str = it.next() orelse return;
+            const prev_term_str = it.next() orelse return;
+            
+            const term = std.fmt.parseInt(u64, term_str, 10) catch return;
+            const prev_lsn = std.fmt.parseInt(u32, prev_lsn_str, 10) catch return;
+            _ = prev_term_str;
+            
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            
+            if (term >= self.current_term) {
+                if (term > self.current_term or self.role != .Follower) {
+                    self.current_term = term;
+                    self.role = .Follower;
+                    std.debug.print("[RaftGroup {d}] Acknowledged new leader: {s} for term {d}\n", .{ self.group_id, leader_id, term });
+                }
+                
+                const server_ptr: *@import("server.zig").Server = @ptrCast(@alignCast(self.server.?));
+                if (server_ptr.leader_address) |la| {
+                    if (!std.mem.eql(u8, la, leader_id)) {
+                        self.allocator.free(la);
+                        server_ptr.leader_address = self.allocator.dupe(u8, leader_id) catch null;
+                    }
+                } else {
+                    server_ptr.leader_address = self.allocator.dupe(u8, leader_id) catch null;
+                }
+                server_ptr.is_replica = true;
+                self.last_heartbeat_ms.store(get_time_ms(), .release);
+                
+                server_ptr.current_term_atomic.store(term, .release);
+                
+                writer.print("RAFT_APPEND_ENTRIES_REPLY {d} {d} YES\n", .{term, prev_lsn}) catch {};
+            } else {
+                writer.print("RAFT_APPEND_ENTRIES_REPLY {d} {d} NO\n", .{self.current_term, prev_lsn}) catch {};
+            }
+        }
+    }
+
 };

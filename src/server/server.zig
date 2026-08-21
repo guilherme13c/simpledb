@@ -13,13 +13,15 @@ pub const Server = struct {
     active_txn_rwlock: std.Io.RwLock,
     active_transactions: std.AutoHashMap(u32, void),
     active_txn_mutex: std.Io.Mutex,
+    current_term_atomic: std.atomic.Value(u64),
+    raft_connections: std.StringHashMap(std.Io.net.Stream),
     next_txn_id: std.atomic.Value(u32),
     lock_manager: LockManager,
     is_replica: bool,
     leader_address: ?[]const u8,
 
     gossip: ?*@import("gossip.zig").GossipProtocol,
-    raft: ?*@import("raft.zig").Raft,
+    raft: ?*@import("raft.zig").RaftGroup,
 
     shard_id: u32,
     num_shards: u32,
@@ -32,7 +34,7 @@ pub const Server = struct {
     /// Initializes a new Server instance.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, catalog: *Catalog, leader_address: ?[]const u8, shard_id: u32, num_shards: u32, extra_seeds: []const []const u8) !Server {
         var gossip_ptr: ?*@import("gossip.zig").GossipProtocol = null;
-        var raft_ptr: ?*@import("raft.zig").Raft = null;
+        var raft_ptr: ?*@import("raft.zig").RaftGroup = null;
 
         var seeds = std.ArrayList([]const u8).empty;
         defer seeds.deinit(allocator);
@@ -46,8 +48,8 @@ pub const Server = struct {
         const gp = try allocator.create(@import("gossip.zig").GossipProtocol);
         gp.* = try @import("gossip.zig").GossipProtocol.init(allocator, io, port, seeds.items, shard_id, num_shards);
 
-        const r = try allocator.create(@import("raft.zig").Raft);
-        r.* = @import("raft.zig").Raft.init(allocator, io, gp);
+        const r = try allocator.create(@import("raft.zig").RaftGroup);
+        r.* = @import("raft.zig").RaftGroup.init(allocator, io, gp, shard_id);
 
         gp.raft = r;
         gossip_ptr = gp;
@@ -61,6 +63,8 @@ pub const Server = struct {
             .active_txn_rwlock = .init,
             .active_transactions = std.AutoHashMap(u32, void).init(allocator),
             .active_txn_mutex = .init,
+            .current_term_atomic = std.atomic.Value(u64).init(0),
+            .raft_connections = std.StringHashMap(std.Io.net.Stream).init(allocator),
             .next_txn_id = std.atomic.Value(u32).init(1),
             .lock_manager = LockManager.init(allocator, io),
             // Replicas start as followers, handled by Raft.
@@ -144,6 +148,11 @@ pub const Server = struct {
 
 
     pub fn deinit(self: *Server) void {
+        var raft_it = self.raft_connections.iterator();
+        while (raft_it.next()) |entry| {
+            entry.value_ptr.close(self.io);
+        }
+        self.raft_connections.deinit();
         if (self.gossip) |gp| {
             gp.deinit();
             self.allocator.destroy(gp);
@@ -241,7 +250,7 @@ pub const Server = struct {
         }
 
         if (self.raft) |r| {
-            r.start() catch |err| {
+            r.start(self) catch |err| {
                 std.debug.print("Failed to start Raft Protocol: {} ", .{err});
             };
         }

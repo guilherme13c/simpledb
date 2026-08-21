@@ -18,6 +18,7 @@ pub const LogRecordHeader = extern struct {
     lsn: u32,
     prev_lsn: u32,
     txn_id: u32,
+    term: u64,
     length: u32, // Length of the entire record including header and payload
     page_id: u32,
     offset: u16,

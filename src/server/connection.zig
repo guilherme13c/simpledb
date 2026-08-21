@@ -37,8 +37,18 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
         if (bytes_read == 0) break;
         const msg = msg_buf[0..bytes_read];
 
+        
         var line_it = std.mem.tokenizeAny(u8, msg, "\r\n");
         while (line_it.next()) |line| {
+            if (std.mem.startsWith(u8, line, "RAFT_")) {
+                if (server.raft) |raft| {
+                    raft.handle_message_tcp(line, &writer.interface) catch |err| {
+                        std.debug.print("Error handling raft TCP msg: {}\n", .{err});
+                    };
+                }
+                continue;
+            }
+
             if (std.mem.startsWith(u8, line, "START_REPLICATION ")) {
                 const lsn_str = line[18..];
                 const lsn = std.fmt.parseInt(u32, lsn_str, 10) catch 0;

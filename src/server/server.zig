@@ -1,4 +1,5 @@
 const std = @import("std");
+const consistent_hash = @import("consistent_hash.zig");
 const Catalog = @import("../storage/catalog.zig").Catalog;
 const connection = @import("connection.zig");
 const LockManager = @import("../storage/concurrency/lock_manager.zig").LockManager;
@@ -15,6 +16,7 @@ pub const Server = struct {
     active_txn_mutex: std.Io.Mutex,
     current_term_atomic: std.atomic.Value(u64),
     raft_connections: std.StringHashMap(std.Io.net.Stream),
+    hash_ring: consistent_hash.ConsistentHashRing,
     next_txn_id: std.atomic.Value(u32),
     lock_manager: LockManager,
     is_replica: bool,
@@ -65,6 +67,7 @@ pub const Server = struct {
             .active_txn_mutex = .init,
             .current_term_atomic = std.atomic.Value(u64).init(0),
             .raft_connections = std.StringHashMap(std.Io.net.Stream).init(allocator),
+            .hash_ring = consistent_hash.ConsistentHashRing.init(allocator, 10),
             .next_txn_id = std.atomic.Value(u32).init(1),
             .lock_manager = LockManager.init(allocator, io),
             // Replicas start as followers, handled by Raft.
@@ -153,6 +156,7 @@ pub const Server = struct {
             entry.value_ptr.close(self.io);
         }
         self.raft_connections.deinit();
+        self.hash_ring.deinit();
         if (self.gossip) |gp| {
             gp.deinit();
             self.allocator.destroy(gp);

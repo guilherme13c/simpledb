@@ -52,6 +52,47 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
             msg_len -= consume;
             
             if (line.len == 0) continue;
+                        if (std.mem.startsWith(u8, line, "ROUTER ADD ")) {
+                var it = std.mem.tokenizeAny(u8, line, " ");
+                _ = it.next();
+                _ = it.next();
+                if (it.next()) |node| {
+                    server.hash_ring.add_node(node) catch |err| {
+                        writer.interface.print("ERR {}\\n", .{err}) catch {};
+                        writer.interface.flush() catch {};
+                        continue;
+                    };
+                    writer.interface.writeAll("OK\\n") catch {};
+                    writer.interface.flush() catch {};
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, line, "ROUTER REMOVE ")) {
+                var it = std.mem.tokenizeAny(u8, line, " ");
+                _ = it.next();
+                _ = it.next();
+                if (it.next()) |node| {
+                    server.hash_ring.remove_node(node);
+                    writer.interface.writeAll("OK\\n") catch {};
+                    writer.interface.flush() catch {};
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, line, "ROUTER GET ")) {
+                var it = std.mem.tokenizeAny(u8, line, " ");
+                _ = it.next();
+                _ = it.next();
+                if (it.next()) |key| {
+                    if (server.hash_ring.get_node(key)) |node| {
+                        writer.interface.print("{s}\\n", .{node}) catch {};
+                        writer.interface.flush() catch {};
+                    } else {
+                        writer.interface.writeAll("ERR no nodes in ring\\n") catch {};
+                        writer.interface.flush() catch {};
+                    }
+                }
+                continue;
+            }
             if (std.mem.startsWith(u8, line, "RAFT_CONFIG_UPDATE ")) {
                 if (server.raft) |raft| {
                     raft.handle_config_update(line, &writer.interface) catch |err| {

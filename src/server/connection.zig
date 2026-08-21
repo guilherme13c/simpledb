@@ -52,6 +52,16 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
             msg_len -= consume;
             
             if (line.len == 0) continue;
+            if (std.mem.startsWith(u8, line, "RAFT_CONFIG_UPDATE ")) {
+                if (server.raft) |raft| {
+                    raft.handle_config_update(line, &writer.interface) catch |err| {
+                        writer.interface.print("ERR {}\n", .{err}) catch {};
+                        writer.interface.flush() catch {};
+                    };
+                }
+                continue;
+            }
+
             if (std.mem.startsWith(u8, line, "RAFT_")) {
                 if (server.raft) |raft| {
                     raft.handle_message_tcp(line, &writer.interface) catch |err| {

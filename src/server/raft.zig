@@ -373,6 +373,52 @@ pub const RaftGroup = struct {
         }
     }
 
+    pub fn handle_config_update(self: *RaftGroup, msg: []const u8, writer: *std.Io.Writer) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (self.role != .Leader) return error.NotLeader;
+
+        var it = std.mem.tokenizeAny(u8, msg, " ");
+        _ = it.next(); // RAFT_CONFIG_UPDATE
+        _ = writer; const action = it.next() orelse return error.InvalidArgs;
+        const peer = it.next() orelse return error.InvalidArgs;
+
+        var new_members = std.ArrayList([]const u8).empty;
+        for (self.config.old_members) |m| {
+            if (!std.mem.eql(u8, m, peer)) {
+                try new_members.append(self.allocator, try self.allocator.dupe(u8, m));
+            }
+        }
+        
+        if (std.mem.eql(u8, action, "add")) {
+            try new_members.append(self.allocator, try self.allocator.dupe(u8, peer));
+        }
+        
+        var old_clone = try self.config.clone(self.allocator);
+        defer old_clone.deinit(self.allocator);
+        
+        self.config.deinit(self.allocator);
+        
+        var new_old = try self.allocator.alloc([]const u8, old_clone.old_members.len);
+        for (old_clone.old_members, 0..) |m, i| new_old[i] = try self.allocator.dupe(u8, m);
+        
+        self.config = .{
+            .old_members = new_old,
+            .new_members = try new_members.toOwnedSlice(self.allocator),
+            .state = .ColdNew,
+        };
+        
+        const server_ptr: *@import("server.zig").Server = @ptrCast(@alignCast(self.server.?));
+        if (server_ptr.catalog.buffer_manager.log_manager) |lm| {
+            const config_data = try self.config.serialize(self.allocator);
+            defer self.allocator.free(config_data);
+            
+            const lsn = try lm.append_record(0, 0, .raft_config_change, 0, 0, config_data);
+            try lm.flush(lsn);
+        }
+    }
+
     pub fn handle_message_tcp(self: *RaftGroup, line: []const u8, writer: *std.Io.Writer) !void {
         var it = std.mem.splitScalar(u8, line, ' ');
         const header = it.next() orelse return;
@@ -426,6 +472,18 @@ pub const RaftGroup = struct {
                                         _ = kv.value_ptr.*.insert(null, key, data) catch {};
                                     }
                                 }
+                            }
+                        } else if (log_header.record_type == .raft_config_change) {
+                            const config_data = total_buf[header_len..];
+                            if (self.config.state == .ColdNew and config_data.len > 0) {
+                                // Potentially we could be committing ColdNew -> Cold (Cnew) here,
+                                // but for now we just naively deserialize and overwrite.
+                            }
+                            const new_config = @import("raft_config.zig").ClusterConfig.deserialize(self.allocator, config_data) catch null;
+                            if (new_config) |cfg| {
+                                self.config.deinit(self.allocator);
+                                self.config = cfg;
+                                std.debug.print("[RaftGroup {}] Applied Config Change from WAL\n", .{self.group_id});
                             }
                         }
                     }

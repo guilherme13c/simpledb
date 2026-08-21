@@ -12,6 +12,7 @@ pub const LogRecordType = enum(u8) {
     logical_insert = 8,
     logical_delete = 9,
     prepare_txn = 10,
+    raft_config_change = 11,
 };
 
 pub const LogRecordHeader = extern struct {

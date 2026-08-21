@@ -1,3 +1,4 @@
+const time = @import("../time.zig");
 const std = @import("std");
 
 pub const Peer = struct {
@@ -35,14 +36,11 @@ pub const GossipProtocol = struct {
         };
 
         for (seeds) |seed| {
-            // Seed parsing can assume port format, let's just add it
-            const split = std.mem.indexOf(u8, seed, ":") orelse continue;
-            const p = std.fmt.parseInt(u16, seed[split + 1 ..], 10) catch continue;
-            const seed_gossip_addr = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ seed[0..split], p + 1000 });
-
-            try gp.peers.put(seed_gossip_addr, .{
-                .address = seed_gossip_addr,
-                .last_seen = get_time_ms(),
+            // Seed is already TCP address, store as is
+            const seed_dup = try allocator.dupe(u8, seed);
+            try gp.peers.put(seed_dup, .{
+                .address = seed_dup,
+                .last_seen = time.get_time_ms(),
                 .shard_id = 0,
             });
         }
@@ -79,13 +77,13 @@ pub const GossipProtocol = struct {
         defer self.mutex.unlock(self.io);
 
         if (self.peers.getPtr(address)) |peer| {
-            peer.last_seen = get_time_ms();
+            peer.last_seen = time.get_time_ms();
             peer.shard_id = s_id;
         } else {
             const addr_copy = self.allocator.dupe(u8, address) catch return;
             self.peers.put(addr_copy, .{
                 .address = addr_copy,
-                .last_seen = get_time_ms(),
+                .last_seen = time.get_time_ms(),
                 .shard_id = s_id,
             }) catch |err| {
                 std.debug.print("[Gossip] Failed to add peer: {}\n", .{err});
@@ -99,40 +97,31 @@ pub const GossipProtocol = struct {
 
     pub fn broadcast_message(self: *GossipProtocol, msg: []const u8) !void {
         var active_peers = std.ArrayList([]const u8).empty;
-        defer active_peers.deinit(self.allocator);
+        defer {
+            for (active_peers.items) |p| self.allocator.free(p);
+            active_peers.deinit(self.allocator);
+        }
         self.get_all_peers(&active_peers) catch return;
 
         for (active_peers.items) |peer_addr| {
             var iter = std.mem.splitScalar(u8, peer_addr, ':');
-            _ = iter.next() orelse continue;
+            const ip = iter.next() orelse continue;
             const port_str = iter.next() orelse continue;
             const port = std.fmt.parseInt(u16, port_str, 10) catch continue;
+            const gossip_port = port + 1000;
 
-            const sockaddr = std.os.linux.sockaddr.in{
-                .family = std.os.linux.AF.INET,
-                .port = std.mem.nativeToBig(u16, port),
-                .addr = std.mem.nativeToBig(u32, 0x7F000001), // 127.0.0.1
-                .zero = [_]u8{0} ** 8,
-            };
-
-            _ = std.os.linux.sendto(
-                self.socket.?.handle,
-                msg.ptr,
-                msg.len,
-                0,
-                @ptrCast(&sockaddr),
-                @sizeOf(std.os.linux.sockaddr.in),
-            );
+            const dest = std.Io.net.IpAddress.parseIp4(ip, gossip_port) catch continue;
+            self.socket.?.send(self.io, &dest, msg) catch continue;
         }
     }
 
     fn listener_loop(self: *GossipProtocol) void {
         var buf: [4096]u8 = undefined;
         while (self.is_running.load(.acquire)) {
-            const bytes_read = std.posix.read(self.socket.?.handle, &buf) catch continue;
-            if (bytes_read == 0) continue;
+            const incoming = self.socket.?.receive(self.io, &buf) catch continue;
+            if (incoming.data.len == 0) continue;
 
-            const data = buf[0..bytes_read];
+            const data = incoming.data;
 
             var it = std.mem.splitScalar(u8, data, ' ');
             const header = it.next() orelse continue;
@@ -198,10 +187,13 @@ pub const GossipProtocol = struct {
 
             self.update_peer_with_shard(sender, sender_shard_id);
 
-            while (it.next()) |peer_addr| {
-                if (peer_addr.len == 0) continue;
-                // Just add them with an unknown shard until they ping us directly
-                self.update_peer_with_shard(peer_addr, sender_shard_id);
+            while (it.next()) |peer_list| {
+                if (peer_list.len == 0) continue;
+                var peer_it = std.mem.splitScalar(u8, peer_list, ',');
+                while (peer_it.next()) |peer_addr| {
+                    if (peer_addr.len == 0 or std.mem.eql(u8, peer_addr, self.server_address)) continue;
+                    self.update_peer_with_shard(peer_addr, sender_shard_id);
+                }
             }
         }
     }
@@ -212,7 +204,10 @@ pub const GossipProtocol = struct {
             if (!self.is_running.load(.acquire)) break;
 
             var active_peers = std.ArrayList([]const u8).empty;
-            defer active_peers.deinit(self.allocator);
+            defer {
+                for (active_peers.items) |p| self.allocator.free(p);
+                active_peers.deinit(self.allocator);
+            }
             self.get_all_peers(&active_peers) catch continue;
 
             var buf: [2048]u8 = undefined;
@@ -238,15 +233,10 @@ pub const GossipProtocol = struct {
                 const split = std.mem.indexOf(u8, peer_addr, ":") orelse continue;
                 const ip = peer_addr[0..split];
                 const port = std.fmt.parseInt(u16, peer_addr[split + 1 ..], 10) catch continue;
+                const gossip_port = port + 1000;
 
-                const ip4 = std.Io.net.IpAddress.parseIp4(ip, port) catch continue;
-                var sa = std.os.linux.sockaddr.in{
-                    .family = std.os.linux.AF.INET,
-                    .port = std.mem.nativeToBig(u16, ip4.ip4.port),
-                    .addr = @bitCast(ip4.ip4.bytes),
-                    .zero = .{0} ** 8,
-                };
-                _ = std.os.linux.sendto(self.socket.?.handle, @ptrCast(msg.ptr), msg.len, 0, @ptrCast(&sa), @sizeOf(@TypeOf(sa)));
+                const dest = std.Io.net.IpAddress.parseIp4(ip, gossip_port) catch continue;
+                self.socket.?.send(self.io, &dest, msg) catch continue;
             }
         }
     }
@@ -255,11 +245,13 @@ pub const GossipProtocol = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        const now = get_time_ms();
+        const now = time.get_time_ms();
         var it = self.peers.valueIterator();
         while (it.next()) |peer| {
+            if (std.mem.eql(u8, peer.address, self.server_address)) continue;
             if (now - peer.last_seen < 15000) {
-                try list.append(self.allocator, peer.address);
+                const tcp_addr = try self.allocator.dupe(u8, peer.address);
+                try list.append(self.allocator, tcp_addr);
             }
         }
     }
@@ -272,23 +264,14 @@ pub const GossipProtocol = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        const now = get_time_ms();
+        const now = time.get_time_ms();
         var it = self.peers.valueIterator();
         while (it.next()) |peer| {
+            if (std.mem.eql(u8, peer.address, self.server_address)) continue;
             if (now - peer.last_seen < 15000 and peer.shard_id == target_shard) {
-                // Return normal TCP port by subtracting 1000
-                const split = std.mem.indexOf(u8, peer.address, ":") orelse continue;
-                const port = std.fmt.parseInt(u16, peer.address[split + 1 ..], 10) catch continue;
-                const tcp_addr = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ peer.address[0..split], port - 1000 });
-                // Memory leak technically because it's not freed by caller normally, but simpledb is a toy
+                const tcp_addr = try self.allocator.dupe(u8, peer.address);
                 try list.append(self.allocator, tcp_addr);
             }
         }
     }
 };
-
-pub fn get_time_ms() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    return @intCast((ts.sec * 1000) + @divTrunc(ts.nsec, 1000000));
-}

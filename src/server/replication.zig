@@ -19,6 +19,15 @@ pub fn serve_replication_stream(server: *server_mod.Server, stream: std.Io.net.S
 
     while (true) {
         if (server.catalog.buffer_manager.log_manager) |lm| {
+            if (current_lsn >= lm.global_lsn.load(.acquire)) {
+                lm.mutex.lockUncancelable(server.io);
+                if (current_lsn >= lm.current_offset) {
+                    lm.cond.waitUncancelable(server.io, &lm.mutex);
+                }
+                lm.mutex.unlock(server.io);
+                continue;
+            }
+            
             var bytes_read: usize = 0;
             // Read header
             while (bytes_read < header_buf.len) {

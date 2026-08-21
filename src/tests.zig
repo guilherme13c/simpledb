@@ -13,6 +13,9 @@ comptime {
     _ = @import("storage/index/btree_node.zig");
     _ = @import("storage/wal/log_manager.zig");
     _ = @import("storage/wal/recovery_manager.zig");
+    _ = @import("server/consistent_hash.zig");
+    _ = @import("server/raft_config.zig");
+    _ = @import("storage/concurrency/wfg.zig");
 }
 
 const sm = @import("storage/storage_manager/storage_manager.zig");
@@ -969,3 +972,76 @@ test "Secondary Index" {
     } }, null, null, null);
 }
 
+
+const ch = @import("server/consistent_hash.zig");
+const rc = @import("server/raft_config.zig");
+const wfg = @import("storage/concurrency/wfg.zig");
+
+test "ConsistentHashRing - deterministic routing" {
+    var ring = ch.ConsistentHashRing.init(std.testing.allocator, 5);
+    defer ring.deinit();
+    try ring.add_node("nodeA");
+    try ring.add_node("nodeB");
+    
+    const target1 = ring.get_node("key1").?;
+    const target2 = ring.get_node("key1").?;
+    try std.testing.expectEqualStrings(target1, target2);
+}
+
+test "ConsistentHashRing - wrap around" {
+    var ring = ch.ConsistentHashRing.init(std.testing.allocator, 1);
+    defer ring.deinit();
+    try ring.add_node("nodeA");
+    
+    // With 1 vnode, it will always return nodeA, even if hash > vnode hash
+    const target = ring.get_node("high_hash_key").?;
+    try std.testing.expectEqualStrings("nodeA", target);
+}
+
+test "ConsistentHashRing - empty and single node" {
+    var ring = ch.ConsistentHashRing.init(std.testing.allocator, 3);
+    defer ring.deinit();
+    
+    try std.testing.expect(ring.get_node("key1") == null);
+    
+    try ring.add_node("nodeA");
+    try std.testing.expectEqualStrings("nodeA", ring.get_node("key1").?);
+    try std.testing.expectEqualStrings("nodeA", ring.get_node("key2").?);
+}
+
+test "ClusterConfig - serialize/deserialize roundtrip" {
+    var old_members = [_][]const u8{ "nodeA", "nodeB" };
+    var config = rc.ClusterConfig{
+        .old_members = &old_members,
+        .new_members = null,
+        .state = .Cold,
+    };
+    
+    const bytes = try config.serialize(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+    
+    var deserialized = try rc.ClusterConfig.deserialize(std.testing.allocator, bytes);
+    defer deserialized.deinit(std.testing.allocator);
+    
+    try std.testing.expectEqual(rc.ClusterState.Cold, deserialized.state);
+    try std.testing.expectEqual(@as(usize, 2), deserialized.old_members.len);
+    try std.testing.expectEqualStrings("nodeA", deserialized.old_members[0]);
+    try std.testing.expectEqualStrings("nodeB", deserialized.old_members[1]);
+    try std.testing.expect(deserialized.new_members == null);
+}
+
+test "GlobalWFG - detect cycles" {
+    var graph = wfg.GlobalWFG.init(std.testing.allocator);
+    defer graph.deinit();
+    
+    // A -> B -> C
+    try graph.add_edge(1, 2);
+    try graph.add_edge(2, 3);
+    try std.testing.expect(graph.detect_cycle() == null);
+    
+    // Cycle A -> B -> A
+    try graph.add_edge(2, 1);
+    const cycle1 = graph.detect_cycle();
+    try std.testing.expect(cycle1 != null);
+    try std.testing.expectEqual(@as(u32, 2), cycle1.?); // highest txn id
+}

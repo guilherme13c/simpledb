@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 def send_query(sock, query):
-    sock.sendall(query.encode('utf-8'))
+    sock.sendall((query + '\n').encode('utf-8'))
     response = sock.recv(4096).decode('utf-8')
     return response
 

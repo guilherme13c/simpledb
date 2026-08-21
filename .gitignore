@@ -8,3 +8,4 @@ profiling/
 scratch/
 test_*.zig
 __pycache__/
+_*

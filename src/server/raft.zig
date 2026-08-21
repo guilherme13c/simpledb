@@ -1,6 +1,6 @@
 const std = @import("std");
 const GossipProtocol = @import("gossip.zig").GossipProtocol;
-const get_time_ms = @import("gossip.zig").get_time_ms;
+const get_time_ms = @import("../time.zig").get_time_ms;
 
 pub const Role = enum { Follower, Candidate, Leader };
 
@@ -19,8 +19,9 @@ pub const RaftGroup = struct {
     config: @import("raft_config.zig").ClusterConfig,
     votes_received_from: std.StringHashMap(void),
     last_heartbeat_ms: std.atomic.Value(i64),
+    is_async_replica: bool,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, gossip: *@import("gossip.zig").GossipProtocol, group_id: u32) RaftGroup {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, gossip: *@import("gossip.zig").GossipProtocol, group_id: u32, is_async_replica: bool) RaftGroup {
         return RaftGroup{
             .allocator = allocator,
             .server = null,
@@ -28,13 +29,14 @@ pub const RaftGroup = struct {
             .io = io,
             .gossip = gossip,
             .mutex = .init,
-            .is_running = std.atomic.Value(bool).init(false),
+            .is_running = std.atomic.Value(bool).init(true),
             .role = .Follower,
             .current_term = 0,
             .voted_for = null,
             .config = .{ .old_members = &[_][]const u8{}, .new_members = null, .state = .Cold },
             .votes_received_from = std.StringHashMap(void).init(allocator),
             .last_heartbeat_ms = std.atomic.Value(i64).init(get_time_ms()),
+            .is_async_replica = is_async_replica,
         };
     }
 
@@ -47,8 +49,11 @@ pub const RaftGroup = struct {
     pub fn start(self: *RaftGroup, server: *anyopaque) !void {
         self.server = server;
         self.is_running.store(true, .release);
-        _ = try std.Thread.spawn(.{}, append_entries_loop, .{self});
-        _ = try std.Thread.spawn(.{}, election_loop, .{self});
+        
+        if (!self.is_async_replica) {
+            _ = try std.Thread.spawn(.{}, append_entries_loop, .{self});
+            _ = try std.Thread.spawn(.{}, election_loop, .{self});
+        }
     }
 
     pub fn handle_message(self: *RaftGroup, data: []const u8) !void {

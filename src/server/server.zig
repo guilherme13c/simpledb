@@ -1,4 +1,6 @@
 const std = @import("std");
+const logger = @import("logger.zig");
+const threading = @import("../threading.zig");
 const consistent_hash = @import("consistent_hash.zig");
 const Catalog = @import("../storage/catalog.zig").Catalog;
 const connection = @import("connection.zig");
@@ -10,6 +12,7 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     port: u16,
+    logger: *logger.Logger,
     catalog: *Catalog,
     active_txn_rwlock: std.Io.RwLock,
     active_transactions: std.AutoHashMap(u32, void),
@@ -51,7 +54,7 @@ pub const Server = struct {
         gp.* = try @import("gossip.zig").GossipProtocol.init(allocator, io, port, seeds.items, shard_id, num_shards);
 
         const r = try allocator.create(@import("raft.zig").RaftGroup);
-        r.* = @import("raft.zig").RaftGroup.init(allocator, io, gp, shard_id);
+        r.* = @import("raft.zig").RaftGroup.init(allocator, io, gp, shard_id, leader_address != null);
 
         gp.raft = r;
         gossip_ptr = gp;
@@ -61,6 +64,7 @@ pub const Server = struct {
             .allocator = allocator,
             .io = io,
             .port = port,
+            .logger = try logger.Logger.init(allocator, .Info),
             .catalog = catalog,
             .active_txn_rwlock = .init,
             .active_transactions = std.AutoHashMap(u32, void).init(allocator),
@@ -75,7 +79,7 @@ pub const Server = struct {
 
             .wfg_shard_edges = std.AutoHashMap(u32, std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge)).init(allocator),
             .is_replica = leader_address != null,
-            .leader_address = leader_address,
+            .leader_address = if (leader_address) |la| try allocator.dupe(u8, la) else null,
             .gossip = gossip_ptr,
             .raft = raft_ptr,
             .shard_id = shard_id,
@@ -273,11 +277,11 @@ pub const Server = struct {
 
         std.debug.print("Server listening on 127.0.0.1:{d} ", .{self.port});
 
-        const checkpointer = std.Thread.spawn(.{}, checkpointer_loop, .{self}) catch |err| {
-            std.debug.print("Failed to spawn checkpointer thread: {} ", .{err});
+        const checkpointer = threading.spawnDetach(checkpointer_loop, .{self}) catch |err| {
+            self.logger.log(.Error, "Failed to spawn checkpointer thread: {}", .{err});
             return err;
         };
-        checkpointer.detach();
+        // No need to detach; deterministic scheduler will run it
 
         while (true) {
             var stream = listener.accept(self.io) catch |err| {
@@ -303,9 +307,9 @@ pub const Server = struct {
         while (true) {
             self.io.sleep(std.Io.Duration.fromSeconds(5), .awake) catch {};
             self.catalog.buffer_manager.checkpoint() catch |err| {
-                std.debug.print("Checkpointer failed: {} ", .{err});
+                self.logger.log(.Error, "Checkpointer failed: {}", .{err});
             };
-            std.debug.print("[Checkpointer] Checkpoint complete. ", .{});
+            self.logger.log(.Info, "[Checkpointer] Checkpoint complete.", .{});
         }
     }
 };

@@ -18,6 +18,7 @@ pub const GossipProtocol = struct {
     raft: ?*@import("raft.zig").Raft = null,
     shard_id: u32,
     num_shards: u32,
+    server_ptr: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16, seeds: []const []const u8, shard_id: u32, num_shards: u32) !GossipProtocol {
         const server_address = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{port});
@@ -61,6 +62,7 @@ pub const GossipProtocol = struct {
     }
 
     pub fn start(self: *GossipProtocol, server: *anyopaque) !void {
+        self.server_ptr = server;
         if (self.raft) |r| { r.server = server; try r.start(); }
         self.is_running.store(true, .release);
 
@@ -94,6 +96,36 @@ pub const GossipProtocol = struct {
         }
     }
 
+
+    pub fn broadcast_message(self: *GossipProtocol, msg: []const u8) !void {
+        var active_peers = std.ArrayList([]const u8).empty;
+        defer active_peers.deinit(self.allocator);
+        self.get_all_peers(&active_peers) catch return;
+
+        for (active_peers.items) |peer_addr| {
+            var iter = std.mem.splitScalar(u8, peer_addr, ':');
+            _ = iter.next() orelse continue;
+            const port_str = iter.next() orelse continue;
+            const port = std.fmt.parseInt(u16, port_str, 10) catch continue;
+
+            const sockaddr = std.os.linux.sockaddr.in{
+                .family = std.os.linux.AF.INET,
+                .port = std.mem.nativeToBig(u16, port),
+                .addr = std.mem.nativeToBig(u32, 0x7F000001), // 127.0.0.1
+                .zero = [_]u8{0} ** 8,
+            };
+
+            _ = std.os.linux.sendto(
+                self.socket.?.handle,
+                msg.ptr,
+                msg.len,
+                0,
+                @ptrCast(&sockaddr),
+                @sizeOf(std.os.linux.sockaddr.in),
+            );
+        }
+    }
+
     fn listener_loop(self: *GossipProtocol) void {
         var buf: [4096]u8 = undefined;
         while (self.is_running.load(.acquire)) {
@@ -110,6 +142,50 @@ pub const GossipProtocol = struct {
                     raft.handle_message(data) catch |err| {
                         std.debug.print("[Gossip] Failed to handle Raft message: {}\n", .{err});
                     };
+                }
+                continue;
+            }
+
+
+            if (std.mem.eql(u8, header, "WFG_KILL")) {
+                const txn_str = it.next() orelse continue;
+                const txn_id = std.fmt.parseInt(u32, txn_str, 10) catch continue;
+                if (self.server_ptr) |ptr| {
+                    const srv = @as(*@import("server.zig").Server, @ptrCast(@alignCast(ptr)));
+                    srv.lock_manager.kill_transaction(txn_id);
+                    srv.active_txn_mutex.lockUncancelable(srv.io);
+                    srv.active_txn_mutex.unlock(srv.io);
+                }
+                continue;
+            }
+            
+            if (std.mem.eql(u8, header, "WFG_REPORT")) {
+                const shard_str = it.next() orelse continue;
+                const r_shard_id = std.fmt.parseInt(u32, shard_str, 10) catch continue;
+                
+                if (self.server_ptr) |ptr| {
+                    const srv = @as(*@import("server.zig").Server, @ptrCast(@alignCast(ptr)));
+                    var new_edges = std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge).empty;
+                    
+                    const edges_str = it.next() orelse "";
+                    if (edges_str.len > 0) {
+                        var edge_it = std.mem.splitScalar(u8, edges_str, ',');
+                        while (edge_it.next()) |edge_str| {
+                            var dash_it = std.mem.splitScalar(u8, edge_str, '-');
+                            const w_str = dash_it.next() orelse continue;
+                            const h_str = dash_it.next() orelse continue;
+                            const w = std.fmt.parseInt(u32, w_str, 10) catch continue;
+                            const h = std.fmt.parseInt(u32, h_str, 10) catch continue;
+                            new_edges.append(self.allocator, .{ .waiting = w, .holding = h }) catch continue;
+                        }
+                    }
+                    
+                    srv.active_txn_mutex.lockUncancelable(srv.io);
+                    if (srv.wfg_shard_edges.getPtr(r_shard_id)) |list| {
+                        list.deinit(srv.allocator);
+                    }
+                    srv.wfg_shard_edges.put(r_shard_id, new_edges) catch {};
+                    srv.active_txn_mutex.unlock(srv.io);
                 }
                 continue;
             }

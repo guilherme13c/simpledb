@@ -36,6 +36,7 @@ pub const LockManager = struct {
     
     // Maps txn_id to a list of resources they have locked (for fast release on abort/commit)
     txn_locks: std.AutoHashMap(u32, std.ArrayList(u64)),
+    killed_txns: std.AutoHashMap(u32, void),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) LockManager {
         return .{
@@ -44,6 +45,7 @@ pub const LockManager = struct {
             .mutex = .init,
             .lock_table = std.AutoHashMap(u64, *LockQueue).init(allocator),
             .txn_locks = std.AutoHashMap(u32, std.ArrayList(u64)).init(allocator),
+            .killed_txns = std.AutoHashMap(u32, void).init(allocator),
         };
     }
 
@@ -60,6 +62,7 @@ pub const LockManager = struct {
             entry.value_ptr.*.deinit(self.allocator);
         }
         self.txn_locks.deinit();
+        self.killed_txns.deinit();
     }
 
     pub fn lock_shared(self: *LockManager, txn_id: u32, resource_id: u64) !void {
@@ -92,6 +95,11 @@ pub const LockManager = struct {
             timeout.sleep(self.io) catch {};
             attempts += 1;
             self.mutex.lockUncancelable(self.io);
+            if (self.killed_txns.contains(txn_id)) {
+                self.unlock_internal(txn_id, resource_id);
+                self.mutex.unlock(self.io);
+                return error.DeadlockDetected;
+            }
             if (attempts > 100) {
                 self.unlock_internal(txn_id, resource_id);
                 if (self.txn_locks.getPtr(txn_id)) |list| {
@@ -156,6 +164,11 @@ pub const LockManager = struct {
             timeout.sleep(self.io) catch {};
             attempts += 1;
             self.mutex.lockUncancelable(self.io);
+            if (self.killed_txns.contains(txn_id)) {
+                self.unlock_internal(txn_id, resource_id);
+                self.mutex.unlock(self.io);
+                return error.DeadlockDetected;
+            }
             if (attempts > 100) {
                 self.unlock_internal(txn_id, resource_id);
                 if (self.txn_locks.getPtr(txn_id)) |list| {
@@ -212,6 +225,40 @@ pub const LockManager = struct {
             }
             list.deinit(self.allocator);
             _ = self.txn_locks.remove(txn_id);
+        }
+    }
+
+    
+    pub fn kill_transaction(self: *LockManager, txn_id: u32) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.killed_txns.put(txn_id, {}) catch {};
+        
+        var it = self.lock_table.valueIterator();
+        while (it.next()) |queue| {
+            queue.*.cv.broadcast(self.io);
+        }
+    }
+
+    pub fn get_wait_for_edges(self: *LockManager, list: *std.ArrayList(@import("wfg.zig").Edge)) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        var it = self.lock_table.valueIterator();
+        while (it.next()) |queue_ptr| {
+            const queue = queue_ptr.*;
+            
+            // Collect holders and waiters
+            for (queue.requests.items) |req_wait| {
+                if (!req_wait.granted) {
+                    for (queue.requests.items) |req_hold| {
+                        if (req_hold.granted and req_hold.txn_id != req_wait.txn_id) {
+                            // wait -> hold
+                            try list.append(self.allocator, .{ .waiting = req_wait.txn_id, .holding = req_hold.txn_id });
+                        }
+                    }
+                }
+            }
         }
     }
 

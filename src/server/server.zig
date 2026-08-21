@@ -5,6 +5,7 @@ const LockManager = @import("../storage/concurrency/lock_manager.zig").LockManag
 
 /// Represents the main database server instance.
 pub const Server = struct {
+    wfg_shard_edges: std.AutoHashMap(u32, std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge)),
     allocator: std.mem.Allocator,
     io: std.Io,
     port: u16,
@@ -65,6 +66,7 @@ pub const Server = struct {
             // Replicas start as followers, handled by Raft.
             // `is_replica` should probably update dynamically, but for now we set it to true if we aren't a leader later.
 
+            .wfg_shard_edges = std.AutoHashMap(u32, std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge)).init(allocator),
             .is_replica = leader_address != null,
             .leader_address = leader_address,
             .gossip = gossip_ptr,
@@ -78,6 +80,90 @@ pub const Server = struct {
     }
 
     /// Starts a new transaction, recording it and capturing a snapshot.
+
+    fn wfg_detector_loop(self: *Server) void {
+        while (true) {
+            self.io.sleep(std.Io.Duration.fromSeconds(2), .awake) catch {};
+            
+            // 1. Get local WFG edges and store them
+            var local_edges = std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge).empty;
+            self.lock_manager.get_wait_for_edges(&local_edges) catch continue;
+            
+            self.active_txn_mutex.lockUncancelable(self.io);
+            if (self.wfg_shard_edges.getPtr(self.shard_id)) |list| {
+                list.deinit(self.allocator);
+            }
+            self.wfg_shard_edges.put(self.shard_id, local_edges) catch {};
+            
+            // 2. Broadcast local edges via Gossip
+            if (self.gossip) |gp| {
+                if (local_edges.items.len > 0) {
+                    var buf: [4096]u8 = undefined;
+                    var fbs = std.io.fixedBufferStream(&buf);
+                    var writer = fbs.writer();
+                    writer.print("WFG_REPORT {d} ", .{self.shard_id}) catch {};
+                    var first = true;
+                    for (local_edges.items) |edge| {
+                        if (!first) writer.print(",", .{}) catch {};
+                        first = false;
+                        writer.print("{d}-{d}", .{edge.waiting, edge.holding}) catch {};
+                    }
+                    gp.broadcast_message(fbs.getWritten()) catch {};
+                } else {
+                    var buf: [64]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "WFG_REPORT {d} ", .{self.shard_id}) catch continue;
+                    gp.broadcast_message(s) catch {};
+                }
+            }
+
+            // 3. Build global graph and detect cycle
+            var global_wfg = @import("../storage/concurrency/wfg.zig").GlobalWFG.init(self.allocator);
+            var it = self.wfg_shard_edges.valueIterator();
+            while (it.next()) |list| {
+                for (list.items) |edge| {
+                    global_wfg.add_edge(edge.waiting, edge.holding) catch {};
+                }
+            }
+            
+            if (global_wfg.detect_cycle()) |cycle_txn| {
+                std.debug.print("[DeadlockDetector] Global Deadlock detected! Killing txn {d}\n", .{cycle_txn});
+                self.lock_manager.kill_transaction(cycle_txn);
+                
+                // Broadcast kill
+                if (self.gossip) |gp| {
+                    var buf: [64]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "WFG_KILL {d}", .{cycle_txn}) catch continue;
+                    gp.broadcast_message(s) catch {};
+                }
+            }
+            global_wfg.deinit();
+            
+            self.active_txn_mutex.unlock(self.io);
+        }
+    }
+
+
+    pub fn deinit(self: *Server) void {
+        if (self.gossip) |gp| {
+            gp.deinit();
+            self.allocator.destroy(gp);
+        }
+        if (self.raft) |r| {
+            r.deinit();
+            self.allocator.destroy(r);
+        }
+        if (self.leader_address) |la| {
+            self.allocator.free(la);
+        }
+        self.active_transactions.deinit();
+        
+        var it_wfg = self.wfg_shard_edges.valueIterator();
+        while (it_wfg.next()) |list| {
+            list.deinit(self.allocator);
+        }
+        self.wfg_shard_edges.deinit();
+    }
+
     pub fn start_txn(self: *Server) @import("../storage/wal/transaction.zig").TransactionContext {
         self.active_txn_mutex.lockUncancelable(self.io);
         defer self.active_txn_mutex.unlock(self.io);

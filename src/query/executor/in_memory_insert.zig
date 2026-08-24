@@ -7,12 +7,17 @@ pub const InMemoryInsertExecutor = struct {
     table: *InMemoryTable,
     child: *Executor,
     allocator: std.mem.Allocator,
+    yielded: bool = false,
 
     pub fn open(self: *@This()) !void {
+        self.yielded = false;
         try self.child.open();
     }
 
     pub fn next(self: *@This()) !?[]ast.Value {
+        if (self.yielded) return null;
+        self.yielded = true;
+
         var inserted: u64 = 0;
         while (try self.child.next()) |tuple| {
             defer @import("../executor.zig").free_tuple(self.allocator, tuple);

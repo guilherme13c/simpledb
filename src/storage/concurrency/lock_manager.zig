@@ -33,7 +33,7 @@ pub const LockManager = struct {
     mutex: std.Io.Mutex,
     // Maps resource_id (e.g. hash of table + key) to its lock queue
     lock_table: std.AutoHashMap(u64, *LockQueue),
-    
+
     // Maps txn_id to a list of resources they have locked (for fast release on abort/commit)
     txn_locks: std.AutoHashMap(u32, std.ArrayList(u64)),
     killed_txns: std.AutoHashMap(u32, void),
@@ -67,9 +67,9 @@ pub const LockManager = struct {
 
     pub fn lock_shared(self: *LockManager, txn_id: u32, resource_id: u64) !void {
         self.mutex.lockUncancelable(self.io);
-        
+
         var queue = try self.get_or_create_queue(resource_id);
-        
+
         // Check if we already hold a lock on this resource
         for (queue.requests.items) |*req| {
             if (req.txn_id == txn_id) {
@@ -129,7 +129,7 @@ pub const LockManager = struct {
 
     pub fn lock_exclusive(self: *LockManager, txn_id: u32, resource_id: u64) !void {
         self.mutex.lockUncancelable(self.io);
-        
+
         var queue = try self.get_or_create_queue(resource_id);
 
         var existing_req_idx: ?usize = null;
@@ -201,7 +201,7 @@ pub const LockManager = struct {
         defer self.mutex.unlock(self.io);
 
         self.unlock_internal(txn_id, resource_id);
-        
+
         // Remove from txn_locks
         if (self.txn_locks.getPtr(txn_id)) |list| {
             var i: usize = 0;
@@ -228,12 +228,11 @@ pub const LockManager = struct {
         }
     }
 
-    
     pub fn kill_transaction(self: *LockManager, txn_id: u32) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.killed_txns.put(txn_id, {}) catch {};
-        
+
         var it = self.lock_table.valueIterator();
         while (it.next()) |queue| {
             queue.*.cv.broadcast(self.io);
@@ -247,7 +246,7 @@ pub const LockManager = struct {
         var it = self.lock_table.valueIterator();
         while (it.next()) |queue_ptr| {
             const queue = queue_ptr.*;
-            
+
             // Collect holders and waiters
             for (queue.requests.items) |req_wait| {
                 if (!req_wait.granted) {
@@ -292,7 +291,7 @@ pub const LockManager = struct {
         if (!res.found_existing) {
             res.value_ptr.* = std.ArrayList(u64).empty;
         }
-        
+
         for (res.value_ptr.items) |existing_res| {
             if (existing_res == resource_id) return;
         }
@@ -303,24 +302,48 @@ pub const LockManager = struct {
         _ = self;
         var someone_else_has_exclusive = false;
         var shared_count: usize = 0;
+        var self_has_req = false;
+        var self_mode: LockMode = .shared;
+        var self_granted = false;
 
         for (queue.requests.items) |req| {
             if (req.txn_id == txn_id) {
-                if (mode == .shared) {
-                    return !someone_else_has_exclusive;
+                self_has_req = true;
+                self_mode = req.mode;
+                self_granted = req.granted;
+            } else {
+                if (req.granted) {
+                    if (req.mode == .exclusive) someone_else_has_exclusive = true;
+                    if (req.mode == .shared) shared_count += 1;
                 } else {
-                    return shared_count == 0 and !someone_else_has_exclusive;
+                    if (req.mode == .exclusive) someone_else_has_exclusive = true;
                 }
             }
-
-            if (req.granted) {
-                if (req.mode == .exclusive) someone_else_has_exclusive = true;
-                if (req.mode == .shared) shared_count += 1;
-            } else {
-                if (req.mode == .exclusive) someone_else_has_exclusive = true;
-            }
         }
-        return false;
+
+        if (!self_has_req) {
+            // New request from this txn
+            if (mode == .shared) return !someone_else_has_exclusive;
+            if (mode == .exclusive) return shared_count == 0 and !someone_else_has_exclusive;
+            return false;
+        }
+
+        // Self request already exists in queue
+        if (self_granted) {
+            if (mode == .shared) return !someone_else_has_exclusive;
+            if (mode == .exclusive) return shared_count == 0 and !someone_else_has_exclusive;
+            return false;
+        } else {
+            // Ungranted request (upgrade or pending)
+            if (self_mode == .exclusive and mode == .exclusive) {
+                return shared_count == 0 and !someone_else_has_exclusive;
+            }
+            if (self_mode == .shared and mode == .exclusive) {
+                return shared_count == 0 and !someone_else_has_exclusive;
+            }
+            if (mode == .shared) return !someone_else_has_exclusive;
+            return false;
+        }
     }
 };
 
@@ -336,16 +359,114 @@ test "LockManager shared and exclusive" {
     try lm.lock_shared(1, 42);
     // T2 gets shared
     try lm.lock_shared(2, 42);
-    
+
     // T1 unlocks
     lm.unlock(1, 42);
-    
+
     // T2 unlocks
     lm.unlock(2, 42);
-    
+
     // T3 gets exclusive
     try lm.lock_exclusive(3, 42);
-    
+
     // Unlock all for T3
     lm.unlock_all(3);
+}
+
+test "can_grant_lock: shared after shared grants" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer {
+        queue.requests.deinit(std.testing.allocator);
+    }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .shared, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 2, .mode = .shared, .granted = false });
+
+    try std.testing.expect(lm.can_grant_lock(&queue, 2, .shared));
+}
+
+test "can_grant_lock: exclusive after shared blocks" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer {
+        queue.requests.deinit(std.testing.allocator);
+    }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .shared, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 2, .mode = .exclusive, .granted = false });
+
+    try std.testing.expect(!lm.can_grant_lock(&queue, 2, .exclusive));
+}
+
+test "can_grant_lock: shared after exclusive blocks" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer {
+        queue.requests.deinit(std.testing.allocator);
+    }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .exclusive, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 2, .mode = .shared, .granted = false });
+
+    try std.testing.expect(!lm.can_grant_lock(&queue, 2, .shared));
+}
+
+test "can_grant_lock: exclusive after exclusive blocks (same txn already has it)" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer {
+        queue.requests.deinit(std.testing.allocator);
+    }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .exclusive, .granted = true });
+
+    try std.testing.expect(lm.can_grant_lock(&queue, 1, .exclusive));
+}
+
+test "can_grant_lock: upgrade shared to exclusive when no other shared" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer { queue.requests.deinit(std.testing.allocator); }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .shared, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .exclusive, .granted = false });
+
+    try std.testing.expect(lm.can_grant_lock(&queue, 1, .exclusive));
+}
+
+test "can_grant_lock: upgrade shared to exclusive blocks when other shared exists" {
+    var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+    var lm = LockManager.init(std.testing.allocator, io);
+    defer lm.deinit();
+
+    var queue = LockQueue.init();
+    defer { queue.requests.deinit(std.testing.allocator); }
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .shared, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 2, .mode = .shared, .granted = true });
+    try queue.requests.append(std.testing.allocator, .{ .txn_id = 1, .mode = .exclusive, .granted = false });
+
+    try std.testing.expect(!lm.can_grant_lock(&queue, 1, .exclusive));
 }

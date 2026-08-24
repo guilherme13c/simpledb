@@ -48,9 +48,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_tests.step);
 
-    // Valgrind test step
+    // Per-module unit test suite (deterministic, no I/O dependencies)
+    const unit_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/unit_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const unit_tests = b.addTest(.{
+        .root_module = unit_test_mod,
+    });
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const unit_test_step = b.step("test-unit", "Run per-module unit tests");
+    unit_test_step.dependOn(&run_unit_tests.step);
+
     const valgrind_test = b.addSystemCommand(&[_][]const u8{
-        "valgrind",
         "--leak-check=full",
         "--show-leak-kinds=all",
         "--error-exitcode=1",
@@ -92,17 +103,6 @@ pub fn build(b: *std.Build) void {
     bench_valgrind_step.dependOn(&valgrind_bench.step);
 
     // Tools
-    const flamegraph_mod = b.createModule(.{
-        .root_source_file = b.path("tools/flamegraph.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    
-    const flamegraph_tool = b.addExecutable(.{
-        .name = "flamegraph_tool",
-        .root_module = flamegraph_mod,
-    });
-
     const report_mod = b.createModule(.{
         .root_source_file = b.path("tools/benchmark_report.zig"),
         .target = target,
@@ -128,12 +128,22 @@ pub fn build(b: *std.Build) void {
             f_run_cmd.addArg(output_name);
             f_run_cmd.addArtifactArg(b_exe);
             f_run_cmd.addArg(arg);
-            
+
             const step = builder.step(name, "Generate a flamegraph");
             step.dependOn(&f_run_cmd.step);
             return step;
         }
     }.add;
+
+    const flamegraph_mod = b.createModule(.{
+        .root_source_file = b.path("tools/flamegraph.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const flamegraph_tool = b.addExecutable(.{
+        .name = "flamegraph_tool",
+        .root_module = flamegraph_mod,
+    });
 
     const all_step = addFlamegraphStep(b, "flamegraph-all", "flamegraph_all", "all", bench_exe, flamegraph_tool);
     const buffer_step = addFlamegraphStep(b, "flamegraph-buffer", "flamegraph_buffer", "buffer", bench_exe, flamegraph_tool);

@@ -8,15 +8,15 @@ pub const Logger = struct {
     level: LogLevel,
 
     pub fn init(allocator: std.mem.Allocator, level: LogLevel) !*Logger {
-        var buf = try allocator.create(std.ArrayList(u8));
-        buf.* = std.ArrayList(u8).init(allocator);
+        const buf = try allocator.create(std.ArrayList(u8));
+        buf.* = try std.ArrayList(u8).initCapacity(allocator, 0);
         const logger = try allocator.create(Logger);
         logger.* = Logger{ .allocator = allocator, .buffer = buf, .level = level };
         return logger;
     }
 
     pub fn deinit(self: *Logger) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
         self.allocator.destroy(self.buffer);
         self.allocator.destroy(self);
     }

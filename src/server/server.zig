@@ -1,5 +1,5 @@
 const std = @import("std");
-const logger = @import("logger.zig");
+const logger = @import("../logger.zig");
 const threading = @import("../threading.zig");
 const consistent_hash = @import("consistent_hash.zig");
 const Catalog = @import("../storage/catalog.zig").Catalog;
@@ -91,21 +91,20 @@ pub const Server = struct {
     }
 
     /// Starts a new transaction, recording it and capturing a snapshot.
-
     fn wfg_detector_loop(self: *Server) void {
         while (true) {
             self.io.sleep(std.Io.Duration.fromSeconds(2), .awake) catch {};
-            
+
             // 1. Get local WFG edges and store them
             var local_edges = std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge).empty;
             self.lock_manager.get_wait_for_edges(&local_edges) catch continue;
-            
+
             self.active_txn_mutex.lockUncancelable(self.io);
             if (self.wfg_shard_edges.getPtr(self.shard_id)) |list| {
                 list.deinit(self.allocator);
             }
             self.wfg_shard_edges.put(self.shard_id, local_edges) catch {};
-            
+
             // 2. Broadcast local edges via Gossip
             if (self.gossip) |gp| {
                 if (local_edges.items.len > 0) {
@@ -117,7 +116,7 @@ pub const Server = struct {
                     for (local_edges.items) |edge| {
                         if (!first) writer.print(",", .{}) catch {};
                         first = false;
-                        writer.print("{d}-{d}", .{edge.waiting, edge.holding}) catch {};
+                        writer.print("{d}-{d}", .{ edge.waiting, edge.holding }) catch {};
                     }
                     gp.broadcast_message(fbs.getWritten()) catch {};
                 } else {
@@ -135,11 +134,11 @@ pub const Server = struct {
                     global_wfg.add_edge(edge.waiting, edge.holding) catch {};
                 }
             }
-            
+
             if (global_wfg.detect_cycle()) |cycle_txn| {
                 std.debug.print("[DeadlockDetector] Global Deadlock detected! Killing txn {d}\n", .{cycle_txn});
                 self.lock_manager.kill_transaction(cycle_txn);
-                
+
                 // Broadcast kill
                 if (self.gossip) |gp| {
                     var buf: [64]u8 = undefined;
@@ -148,11 +147,10 @@ pub const Server = struct {
                 }
             }
             global_wfg.deinit();
-            
+
             self.active_txn_mutex.unlock(self.io);
         }
     }
-
 
     pub fn deinit(self: *Server) void {
         var raft_it = self.raft_connections.iterator();
@@ -173,7 +171,8 @@ pub const Server = struct {
             self.allocator.free(la);
         }
         self.active_transactions.deinit();
-        
+        self.logger.deinit();
+
         var it_wfg = self.wfg_shard_edges.valueIterator();
         while (it_wfg.next()) |list| {
             list.deinit(self.allocator);
@@ -276,12 +275,6 @@ pub const Server = struct {
         defer listener.socket.close(self.io);
 
         std.debug.print("Server listening on 127.0.0.1:{d} ", .{self.port});
-
-        const checkpointer = threading.spawnDetach(checkpointer_loop, .{self}) catch |err| {
-            self.logger.log(.Error, "Failed to spawn checkpointer thread: {}", .{err});
-            return err;
-        };
-        // No need to detach; deterministic scheduler will run it
 
         while (true) {
             var stream = listener.accept(self.io) catch |err| {

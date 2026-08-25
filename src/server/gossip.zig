@@ -62,12 +62,15 @@ pub const GossipProtocol = struct {
 
     pub fn start(self: *GossipProtocol, server: *anyopaque) !void {
         self.server_ptr = server;
-        if (self.raft) |r| { r.server = server; try r.start(server); }
+        if (self.raft) |r| {
+            r.server = server;
+            try r.start(server);
+        }
         self.is_running.store(true, .release);
 
         var ip4 = try std.Io.net.IpAddress.parseIp4("127.0.0.1", self.gossip_port);
         self.socket = try ip4.bind(self.io, .{ .mode = .dgram });
-        std.debug.print("Gossip Protocol started on UDP port {d}\n", .{self.gossip_port});
+        if (!builtin.is_test) std.debug.print("Gossip Protocol started on UDP port {d}\n", .{self.gossip_port});
 
         _ = try std.Thread.spawn(.{}, listener_loop, .{self});
         _ = try std.Thread.spawn(.{}, pinger_loop, .{self});
@@ -87,14 +90,13 @@ pub const GossipProtocol = struct {
                 .last_seen = time.get_time_ms(),
                 .shard_id = s_id,
             }) catch |err| {
-                std.debug.print("[Gossip] Failed to add peer: {}\n", .{err});
+                if (!builtin.is_test) std.debug.print("[Gossip] Failed to add peer: {}\n", .{err});
                 self.allocator.free(addr_copy);
                 return;
             };
-            std.debug.print("[Gossip] Discovered new peer: {s} (shard {d})\n", .{ addr_copy, s_id });
+            if (!builtin.is_test) std.debug.print("[Gossip] Discovered new peer: {s} (shard {d})\n", .{ addr_copy, s_id });
         }
     }
-
 
     pub fn broadcast_message(self: *GossipProtocol, msg: []const u8) !void {
         var active_peers = std.ArrayList([]const u8).empty;
@@ -130,12 +132,11 @@ pub const GossipProtocol = struct {
             if (std.mem.startsWith(u8, header, "RAFT_")) {
                 if (self.raft) |raft| {
                     raft.handle_message(data) catch |err| {
-                        std.debug.print("[Gossip] Failed to handle Raft message: {}\n", .{err});
+                        if (!builtin.is_test) std.debug.print("[Gossip] Failed to handle Raft message: {}\n", .{err});
                     };
                 }
                 continue;
             }
-
 
             if (std.mem.eql(u8, header, "WFG_KILL")) {
                 const txn_str = it.next() orelse continue;
@@ -148,15 +149,15 @@ pub const GossipProtocol = struct {
                 }
                 continue;
             }
-            
+
             if (std.mem.eql(u8, header, "WFG_REPORT")) {
                 const shard_str = it.next() orelse continue;
                 const r_shard_id = std.fmt.parseInt(u32, shard_str, 10) catch continue;
-                
+
                 if (self.server_ptr) |ptr| {
                     const srv = @as(*@import("server.zig").Server, @ptrCast(@alignCast(ptr)));
                     var new_edges = std.ArrayList(@import("../storage/concurrency/wfg.zig").Edge).empty;
-                    
+
                     const edges_str = it.next() orelse "";
                     if (edges_str.len > 0) {
                         var edge_it = std.mem.splitScalar(u8, edges_str, ',');
@@ -169,7 +170,7 @@ pub const GossipProtocol = struct {
                             new_edges.append(self.allocator, .{ .waiting = w, .holding = h }) catch continue;
                         }
                     }
-                    
+
                     srv.active_txn_mutex.lockUncancelable(srv.io);
                     if (srv.wfg_shard_edges.getPtr(r_shard_id)) |list| {
                         list.deinit(srv.allocator);

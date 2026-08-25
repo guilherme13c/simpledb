@@ -41,6 +41,8 @@ pub const Server = struct {
         var gossip_ptr: ?*@import("gossip.zig").GossipProtocol = null;
         var raft_ptr: ?*@import("raft.zig").RaftGroup = null;
 
+        var active_transactions = std.AutoHashMap(u32, void).init(allocator);
+        try active_transactions.ensureTotalCapacity(256);
         var seeds = std.ArrayList([]const u8).empty;
         defer seeds.deinit(allocator);
         if (leader_address) |addr| {
@@ -67,7 +69,7 @@ pub const Server = struct {
             .logger = try logger.Logger.init(allocator, .Info),
             .catalog = catalog,
             .active_txn_rwlock = .init,
-            .active_transactions = std.AutoHashMap(u32, void).init(allocator),
+            .active_transactions = active_transactions,
             .active_txn_mutex = .init,
             .current_term_atomic = std.atomic.Value(u64).init(0),
             .raft_connections = std.StringHashMap(std.Io.net.Stream).init(allocator),
@@ -180,12 +182,18 @@ pub const Server = struct {
         self.wfg_shard_edges.deinit();
     }
 
-    pub fn start_txn(self: *Server) @import("../storage/wal/transaction.zig").TransactionContext {
+    pub fn start_txn(self: *Server) !@import("../storage/wal/transaction.zig").TransactionContext {
         self.active_txn_mutex.lockUncancelable(self.io);
         defer self.active_txn_mutex.unlock(self.io);
+
+        var snap = @import("../storage/wal/transaction.zig").ActiveSnapshot{};
+        var it = self.active_transactions.keyIterator();
+        while (it.next()) |k| {
+            snap.append(k.*) catch return error.TooManyActiveTransactions;
+        }
+
         const txn_id = self.next_txn_id.fetchAdd(1, .monotonic);
-        const snap = self.active_transactions.clone() catch unreachable;
-        self.active_transactions.put(txn_id, {}) catch unreachable;
+        self.active_transactions.putAssumeCapacity(txn_id, {});
         return .{
             .txn_id = txn_id,
             .lock_manager = &self.lock_manager,

@@ -47,12 +47,12 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
             const line_slice = msg_buf[0..idx];
             const line = server.allocator.dupe(u8, line_slice) catch break;
             defer server.allocator.free(line);
-            
+
             std.mem.copyForwards(u8, msg_buf[0 .. msg_len - consume], msg_buf[consume..msg_len]);
             msg_len -= consume;
-            
+
             if (line.len == 0) continue;
-                        if (std.mem.startsWith(u8, line, "ROUTER ADD ")) {
+            if (std.mem.startsWith(u8, line, "ROUTER ADD ")) {
                 var it = std.mem.tokenizeAny(u8, line, " ");
                 _ = it.next();
                 _ = it.next();
@@ -162,14 +162,24 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 if (requires_exclusive_lock) {
                     server.active_txn_rwlock.lockUncancelable(server.io);
                     did_lock_exclusive_now = true;
-                    txn_ctx = server.start_txn();
+                    txn_ctx = server.start_txn() catch |err| {
+                        server.active_txn_rwlock.unlock(server.io);
+                        writer.interface.print("ERR {}\n", .{err}) catch break;
+                        writer.interface.flush() catch break;
+                        continue;
+                    };
                     if (server.catalog.buffer_manager.log_manager) |lm| {
                         txn_ctx.?.prev_lsn = lm.append_record(txn_ctx.?.txn_id, 0, .begin, 0, 0, &[_]u8{}) catch 0;
                     }
                 } else if (requires_shared_lock) {
                     server.active_txn_rwlock.lockSharedUncancelable(server.io);
                     did_lock_shared_now = true;
-                    txn_ctx = server.start_txn();
+                    txn_ctx = server.start_txn() catch |err| {
+                        server.active_txn_rwlock.unlockShared(server.io);
+                        writer.interface.print("ERR {}\n", .{err}) catch break;
+                        writer.interface.flush() catch break;
+                        continue;
+                    };
                     if (server.catalog.buffer_manager.log_manager) |lm| {
                         txn_ctx.?.prev_lsn = lm.append_record(txn_ctx.?.txn_id, 0, .begin, 0, 0, &[_]u8{}) catch 0;
                     }
@@ -184,7 +194,13 @@ pub fn handleConnection(server: anytype, stream: std.Io.net.Stream) void {
                 }
                 server.active_txn_rwlock.lockSharedUncancelable(server.io);
                 in_transaction = true;
-                txn_ctx = server.start_txn();
+                txn_ctx = server.start_txn() catch |err| {
+                    in_transaction = false;
+                    server.active_txn_rwlock.unlockShared(server.io);
+                    writer.interface.print("ERR {}\n", .{err}) catch break;
+                    writer.interface.flush() catch break;
+                    continue;
+                };
                 if (server.catalog.buffer_manager.log_manager) |lm| {
                     txn_ctx.?.prev_lsn = lm.append_record(txn_ctx.?.txn_id, 0, .begin, 0, 0, &[_]u8{}) catch 0;
                 }

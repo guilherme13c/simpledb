@@ -10,7 +10,7 @@ const StdoutWriter = struct {
         _ = self;
         std.debug.print(fmt, args);
     }
-    
+
     pub fn writeAll(self: StdoutWriter, data: []const u8) !void {
         _ = self;
         std.debug.print("{s}", .{data});
@@ -51,7 +51,10 @@ pub fn run_cli(allocator: std.mem.Allocator, server: *Server, catalog: *Catalog)
         while (len < buf.len - 1) {
             var b: [1]u8 = undefined;
             const n = std.posix.read(std.posix.STDIN_FILENO, &b) catch 0;
-            if (n == 0) { eof = true; break; }
+            if (n == 0) {
+                eof = true;
+                break;
+            }
             if (b[0] == '\n') break;
             buf[len] = b[0];
             len += 1;
@@ -93,25 +96,33 @@ pub fn run_cli(allocator: std.mem.Allocator, server: *Server, catalog: *Catalog)
             .insert, .delete => requires_exclusive_lock = true,
             .create_table, .drop_table => requires_exclusive_lock = true,
             .select => requires_shared_lock = true,
-            else => {}
+            else => {},
         }
-        
+
         var did_lock_exclusive_now = false;
         var did_lock_shared_now = false;
         if (!in_transaction) {
             if (requires_exclusive_lock) {
                 server.active_txn_rwlock.lockUncancelable(server.io);
                 did_lock_exclusive_now = true;
-                txn_ctx = server.start_txn();
+                txn_ctx = server.start_txn() catch |err| {
+                    server.active_txn_rwlock.unlock(server.io);
+                    try stdout.print("ERR {}\n", .{err});
+                    continue;
+                };
                 if (catalog.buffer_manager.log_manager) |lm| {
                     txn_ctx.?.prev_lsn = lm.append_record(txn_ctx.?.txn_id, 0, .begin, 0, 0, &[_]u8{}) catch 0;
                 }
             } else if (requires_shared_lock) {
                 server.active_txn_rwlock.lockSharedUncancelable(server.io);
                 did_lock_shared_now = true;
+                txn_ctx = server.start_txn() catch |err| {
+                    server.active_txn_rwlock.unlockShared(server.io);
+                    try stdout.print("ERR {}\n", .{err});
+                    continue;
+                };
             }
         }
-
         if (stmt == .begin) {
             if (in_transaction) {
                 try stdout.writeAll("ERR already in transaction\n");
@@ -119,7 +130,12 @@ pub fn run_cli(allocator: std.mem.Allocator, server: *Server, catalog: *Catalog)
             }
             server.active_txn_rwlock.lockUncancelable(server.io);
             in_transaction = true;
-            txn_ctx = server.start_txn();
+            txn_ctx = server.start_txn() catch |err| {
+                in_transaction = false;
+                server.active_txn_rwlock.unlock(server.io);
+                try stdout.print("ERR {}\n", .{err});
+                continue;
+            };
             if (catalog.buffer_manager.log_manager) |lm| {
                 txn_ctx.?.prev_lsn = lm.append_record(txn_ctx.?.txn_id, 0, .begin, 0, 0, &[_]u8{}) catch 0;
             }
@@ -155,8 +171,10 @@ pub fn run_cli(allocator: std.mem.Allocator, server: *Server, catalog: *Catalog)
         }
 
         var ctx_ptr: ?*@import("storage/wal/transaction.zig").TransactionContext = null;
-        if (txn_ctx) |*ctx| { ctx_ptr = ctx; }
-        
+        if (txn_ctx) |*ctx| {
+            ctx_ptr = ctx;
+        }
+
         server.execute_statement(stmt, ctx_ptr, stdout, if (in_transaction or did_lock_exclusive_now) &undo_stack else null) catch |err| {
             if (did_lock_exclusive_now) {
                 if (catalog.buffer_manager.log_manager) |lm| {
@@ -187,7 +205,7 @@ pub fn run_cli(allocator: std.mem.Allocator, server: *Server, catalog: *Catalog)
             txn_ctx = null;
             server.active_txn_rwlock.unlockShared(server.io);
         }
-        
+
         if (stmt != .select) {
             try stdout.writeAll("OK\n");
         }

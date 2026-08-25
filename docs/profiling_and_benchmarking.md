@@ -39,6 +39,8 @@ The suite covers the following modules:
 6. **Execution:** Tests Volcano-model iterator speeds over simulated raw datasets.
 7. **Transaction & WAL:** Tests commit latency by repeatedly appending records and flushing the log manager.
 
+**Memory Usage Tracking:** Each benchmark now reports the total memory allocated (in bytes) during execution via `std.heap.DebugAllocator`, enabling detection of memory regressions and allocation hotspots.
+
 ## Profiling (Flamegraphs)
 
 To identify CPU bottlenecks, SimpleDB wraps Linux `perf` tools directly into the Zig build system to generate interactive SVG flamegraphs.
@@ -71,3 +73,16 @@ The output will be placed in the `profiling/` directory:
 - `profiling/flamegraph_transaction.svg`
 
 Open any of these SVG files in your web browser to interactively explore where CPU time is being spent in the database stack!
+
+
+#### Memory Usage Tracking
+
+The benchmark suite now also tracks **memory usage** for each benchmark target. Memory usage is measured using `std.heap.DebugAllocator` (with `enable_memory_limit = true`) by reading the `total_requested_bytes` field before and after each benchmark run.
+
+The benchmark executable prints memory usage lines like:
+
+```
+Memory used by BTree: 12345 bytes
+```
+
+This enables spotting memory regressions and comparing memory footprints across runs. The `benchmark-report` parsing can be extended to surface these numbers in the report table.

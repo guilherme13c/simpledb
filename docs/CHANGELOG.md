@@ -5,6 +5,8 @@ All notable changes to the SimpleDB project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Memory Usage Tracking**: Added memory usage tracking to the benchmark suite using `std.heap.DebugAllocator`. Each benchmark now reports the total bytes allocated during execution, enabling detection of memory regressions and allocation hotspots.
+
 - **Hash Join**: Integrated `HashJoinExecutor` into the Cost-Based Optimizer, which automatically selects an `O(N+M)` hash join instead of Sort-Merge or Nested Loop joins for larger datasets based on statistics heuristics.
 - **Float Literals**: Lexer and Parser upgraded to correctly ingest floating-point decimals natively instead of truncating them as integers, preventing `@bitCast` errors in storage serialization.
 - **Extended Data Types**: Expanded schema support to include `Float` (f64), `Timestamp` (i64), `JSON` (String), `UUID` (16 bytes), and `Signed Integer` (i64) data types.

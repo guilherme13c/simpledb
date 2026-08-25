@@ -45,9 +45,6 @@ pub fn build(b: *std.Build) void {
 
     const run_tests = b.addRunArtifact(tests);
 
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&run_tests.step);
-
     // Per-module unit test suite (deterministic, no I/O dependencies)
     const unit_test_mod = b.createModule(.{
         .root_source_file = b.path("src/unit_tests.zig"),
@@ -73,6 +70,10 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("test-unit", "Run per-module unit tests");
     unit_test_step.dependOn(&run_unit_tests.step);
     unit_test_step.dependOn(&run_unit_runner.step);
+    const test_step = b.step("test", "Run all tests (library + unit)");
+    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_unit_runner.step);
 
     const valgrind_test = b.addSystemCommand(&[_][]const u8{
         "--leak-check=full",

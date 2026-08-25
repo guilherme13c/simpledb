@@ -26,11 +26,9 @@ pub const BTreeNodeView = struct {
     pub fn is_safe_for_insert(self: *const BTreeNodeView) bool {
         const meta = self.get_meta();
         if (meta.node_type == .leaf) {
-            const capacity = page.content_length / @sizeOf(KeyValue);
-            return meta.num_keys < capacity;
+            return meta.num_keys < leaf_capacity;
         } else {
-            const capacity = (page.content_length - 8) / @sizeOf(InternalEntry);
-            return meta.num_keys < capacity;
+            return meta.num_keys < internal_capacity;
         }
     }
 
@@ -59,11 +57,11 @@ pub const BTreeNodeView = struct {
         value: u64,
     };
 
+    pub const leaf_capacity = page.content_length / @sizeOf(KeyValue);
+
     pub fn get_leaf_elements(self: *BTreeNodeView) []align(1) KeyValue {
         const meta = self.get_meta();
-        const capacity = page.content_length / @sizeOf(KeyValue);
-        const ptr = @as(*align(1) [capacity]KeyValue, @ptrCast(&self.raw.content));
-
+        const ptr = @as(*align(1) [leaf_capacity]KeyValue, @ptrCast(&self.raw.content));
         return ptr[0..meta.num_keys];
     }
 
@@ -75,42 +73,45 @@ pub const BTreeNodeView = struct {
 
         while (left < right) {
             const mid = left + (right - left) / 2;
-            if (elements[mid].key == key) {
-                return elements[mid].value;
-            } else if (elements[mid].key < key) {
+            if (elements[mid].key < key) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
+        }
+        if (left < elements.len and elements[left].key == key) {
+            return elements[left].value;
         }
         return null;
     }
 
     pub fn leaf_insert(self: *BTreeNodeView, key: u64, value: u64) !void {
         var meta = self.get_meta();
-        const capacity = page.content_length / @sizeOf(KeyValue);
 
-        if (meta.num_keys >= capacity) {
+        if (meta.num_keys >= leaf_capacity) {
             return error.NodeFull;
         }
 
-        const ptr = @as(*align(1) [capacity]KeyValue, @ptrCast(&self.raw.content));
-        
-        var left: usize = 0;
-        var right: usize = meta.num_keys;
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            if (ptr[mid].key < key) {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-        const insert_idx = left;
+        const ptr = @as(*align(1) [leaf_capacity]KeyValue, @ptrCast(&self.raw.content));
 
-        const dest_bytes = std.mem.sliceAsBytes(ptr[insert_idx + 1 .. meta.num_keys + 1]);
-        const src_bytes = std.mem.sliceAsBytes(ptr[insert_idx .. meta.num_keys]);
-        std.mem.copyBackwards(u8, dest_bytes, src_bytes);
+        var insert_idx: usize = meta.num_keys;
+        if (meta.num_keys > 0 and ptr[meta.num_keys - 1].key >= key) {
+            var left: usize = 0;
+            var right: usize = meta.num_keys;
+            while (left < right) {
+                const mid = left + (right - left) / 2;
+                if (ptr[mid].key < key) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
+            }
+            insert_idx = left;
+
+            const dest_bytes = std.mem.sliceAsBytes(ptr[insert_idx + 1 .. meta.num_keys + 1]);
+            const src_bytes = std.mem.sliceAsBytes(ptr[insert_idx..meta.num_keys]);
+            std.mem.copyBackwards(u8, dest_bytes, src_bytes);
+        }
 
         ptr[insert_idx] = .{
             .key = key,
@@ -164,7 +165,7 @@ pub const BTreeNodeView = struct {
 
         meta.num_keys = mid;
         new_meta.num_keys = keys_to_move;
-        
+
         new_meta.next_leaf = meta.next_leaf;
         meta.next_leaf = @intCast(new_node_id);
 
@@ -197,6 +198,8 @@ pub const BTreeNodeView = struct {
         _padding: u32 = 0, // Pad to 16 bytes for alignment
     };
 
+    pub const internal_capacity = (page.content_length - 8) / @sizeOf(InternalEntry);
+
     pub fn get_leftmost_child(self: *const BTreeNodeView) u32 {
         const ptr = @as(*const u32, @ptrCast(@alignCast(&self.raw.content[0])));
         return ptr.*;
@@ -209,9 +212,7 @@ pub const BTreeNodeView = struct {
 
     pub fn get_internal_elements(self: *BTreeNodeView) []align(1) InternalEntry {
         const meta = self.get_meta();
-        const capacity = (page.content_length - 8) / @sizeOf(InternalEntry);
-        const ptr = @as(*align(1) [capacity]InternalEntry, @ptrCast(&self.raw.content[8]));
-
+        const ptr = @as(*align(1) [internal_capacity]InternalEntry, @ptrCast(&self.raw.content[8]));
         return ptr[0..meta.num_keys];
     }
 
@@ -242,29 +243,31 @@ pub const BTreeNodeView = struct {
 
     pub fn internal_insert(self: *BTreeNodeView, key: u64, right_child: u32) !void {
         var meta = self.get_meta();
-        const capacity = (page.content_length - 8) / @sizeOf(InternalEntry);
 
-        if (meta.num_keys >= capacity) {
+        if (meta.num_keys >= internal_capacity) {
             return error.NodeFull;
         }
 
-        const ptr = @as(*align(1) [capacity]InternalEntry, @ptrCast(&self.raw.content[8]));
+        const ptr = @as(*align(1) [internal_capacity]InternalEntry, @ptrCast(&self.raw.content[8]));
 
-        var left: usize = 0;
-        var right: usize = meta.num_keys;
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            if (ptr[mid].key < key) {
-                left = mid + 1;
-            } else {
-                right = mid;
+        var insert_idx: usize = meta.num_keys;
+        if (meta.num_keys > 0 and ptr[meta.num_keys - 1].key >= key) {
+            var left: usize = 0;
+            var right: usize = meta.num_keys;
+            while (left < right) {
+                const mid = left + (right - left) / 2;
+                if (ptr[mid].key < key) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
             }
-        }
-        const insert_idx = left;
+            insert_idx = left;
 
-        const dest_bytes = std.mem.sliceAsBytes(ptr[insert_idx + 1 .. meta.num_keys + 1]);
-        const src_bytes = std.mem.sliceAsBytes(ptr[insert_idx .. meta.num_keys]);
-        std.mem.copyBackwards(u8, dest_bytes, src_bytes);
+            const dest_bytes = std.mem.sliceAsBytes(ptr[insert_idx + 1 .. meta.num_keys + 1]);
+            const src_bytes = std.mem.sliceAsBytes(ptr[insert_idx..meta.num_keys]);
+            std.mem.copyBackwards(u8, dest_bytes, src_bytes);
+        }
 
         ptr[insert_idx] = .{ .key = key, .right_child = right_child };
 
@@ -281,7 +284,7 @@ pub const BTreeNodeView = struct {
             if (meta.num_keys == 0) return error.KeyNotFound;
             self.set_leftmost_child(ptr[0].right_child);
             const dest_bytes = std.mem.sliceAsBytes(ptr[0 .. meta.num_keys - 1]);
-            const src_bytes = std.mem.sliceAsBytes(ptr[1 .. meta.num_keys]);
+            const src_bytes = std.mem.sliceAsBytes(ptr[1..meta.num_keys]);
             std.mem.copyForwards(u8, dest_bytes, src_bytes);
             meta.num_keys -= 1;
             self.set_meta(meta);
@@ -419,12 +422,12 @@ test "BTreeNodeView leaf merge" {
     var node2 = BTreeNodeView.init(&raw_page2, .leaf);
     try node2.leaf_insert(3, 30);
     try node2.leaf_insert(4, 40);
-    
+
     // Simulate next leaf linkage
     var meta1 = node1.get_meta();
     meta1.next_leaf = 100; // random id for node2
     node1.set_meta(meta1);
-    
+
     var meta2 = node2.get_meta();
     meta2.next_leaf = 200; // random id for what comes after node2
     node2.set_meta(meta2);

@@ -46,7 +46,7 @@ pub const Table = struct {
         const xmin = if (txn_ctx) |ctx| ctx.txn_id else 0;
         std.mem.writeInt(u32, mvcc_header[0..4][0..4], xmin, .little);
         std.mem.writeInt(u32, mvcc_header[4..8][0..4], 0, .little); // xmax = 0
-        
+
         while (true) {
             const frame = try self.buffer_manager.fetch_frame(self.current_heap_page_id);
 
@@ -59,12 +59,19 @@ pub const Table = struct {
                     const prev_lsn = if (txn_ctx) |ctx| ctx.prev_lsn else 0;
 
                     const payload_len = 8 + data.len;
-                    var logical_payload = try self.allocator.alloc(u8, payload_len);
-                    defer self.allocator.free(logical_payload);
-                    std.mem.writeInt(u64, logical_payload[0..8][0..8], key, .little);
-                    @memcpy(logical_payload[8..], data);
-                    
-                    const lsn = try lm.append_record(txn_id, prev_lsn, .logical_insert, self.btree.root_page_id, 0, logical_payload);
+                    // Optimization: use stack buffer for common small payloads to avoid heap allocation
+                    var stack_buf: [256]u8 = undefined;
+                    const lsn = if (payload_len <= stack_buf.len) blk: {
+                        std.mem.writeInt(u64, stack_buf[0..8][0..8], key, .little);
+                        @memcpy(stack_buf[8..][0..data.len], data);
+                        break :blk try lm.append_record(txn_id, prev_lsn, .logical_insert, self.btree.root_page_id, 0, stack_buf[0..payload_len]);
+                    } else blk: {
+                        var logical_payload = try self.allocator.alloc(u8, payload_len);
+                        defer self.allocator.free(logical_payload);
+                        std.mem.writeInt(u64, logical_payload[0..8][0..8], key, .little);
+                        @memcpy(logical_payload[8..], data);
+                        break :blk try lm.append_record(txn_id, prev_lsn, .logical_insert, self.btree.root_page_id, 0, logical_payload);
+                    };
                     frame.page.header.lsn = lsn;
                     if (txn_ctx) |ctx| ctx.prev_lsn = lsn;
                 }
@@ -73,7 +80,7 @@ pub const Table = struct {
                     try ctx.lock_row_exclusive(self.btree.root_page_id, rid);
                 }
                 try self.btree.insert(txn_ctx, key, rid);
-                
+
                 if (self.indexes.count() > 0 and self.schema.len > 0) {
                     var it = self.indexes.iterator();
                     while (it.next()) |kv| {
@@ -87,7 +94,7 @@ pub const Table = struct {
                         } else |_| {}
                     }
                 }
-                
+
                 self.buffer_manager.unpin_frame(frame, true);
                 _ = self.num_tuples.fetchAdd(1, .monotonic);
                 return rid;
@@ -109,9 +116,35 @@ pub const Table = struct {
     }
 
     pub fn search(self: *Table, allocator: std.mem.Allocator, txn_ctx: ?*TransactionContext, key: u64) !?[]u8 {
+        // Fast path: direct BTree point lookup without heap allocating an RID array
+        if (try self.btree.search(key)) |rid| {
+            const heap_page_id: u32 = @intCast(rid >> 32);
+            const slot_id: u16 = @intCast(rid & 0xFFFF);
+
+            const frame = try self.buffer_manager.fetch_frame(heap_page_id);
+            defer self.buffer_manager.unpin_frame(frame, false);
+
+            var view = SlottedView.init(&frame.page, false);
+            if (view.get_tuple(slot_id)) |full_data| {
+                if (full_data.len >= 8) {
+                    const xmin = std.mem.readInt(u32, full_data[0..4][0..4], .little);
+                    const xmax = std.mem.readInt(u32, full_data[4..8][0..4], .little);
+
+                    const is_visible = if (txn_ctx) |ctx| ctx.is_visible(xmin, xmax) else (xmax == 0);
+                    if (is_visible) {
+                        const data = full_data[8..];
+                        const copy = try allocator.alloc(u8, data.len);
+                        @memcpy(copy, data);
+                        return copy;
+                    }
+                }
+            }
+        }
+
+        // Fallback to scan if duplicate keys / multiple versions exist and direct search didn't find visible tuple
         const rids = try self.btree.scan(allocator, key, key);
         defer allocator.free(rids);
-        
+
         for (rids) |rid| {
             const heap_page_id: u32 = @intCast(rid >> 32);
             const slot_id: u16 = @intCast(rid & 0xFFFF);
@@ -124,7 +157,7 @@ pub const Table = struct {
                 if (full_data.len < 8) continue;
                 const xmin = std.mem.readInt(u32, full_data[0..4][0..4], .little);
                 const xmax = std.mem.readInt(u32, full_data[4..8][0..4], .little);
-                
+
                 var is_visible = true;
                 if (txn_ctx) |ctx| {
                     is_visible = ctx.is_visible(xmin, xmax);
@@ -172,19 +205,19 @@ pub const Table = struct {
 
             const frame = try self.buffer_manager.fetch_frame(heap_page_id);
             var view = SlottedView.init(&frame.page, false);
-            
+
             if (view.get_tuple(slot_id)) |full_data| {
                 if (full_data.len >= 8) {
                     const xmin = std.mem.readInt(u32, full_data[0..4][0..4], .little);
                     const xmax = std.mem.readInt(u32, full_data[4..8][0..4], .little);
-                    
+
                     var is_visible = true;
                     if (txn_ctx) |ctx| {
                         is_visible = ctx.is_visible(xmin, xmax);
                     } else {
                         is_visible = (xmax == 0);
                     }
-                    
+
                     if (is_visible) {
                         const data = full_data[8..];
                         const copy = try allocator.alloc(u8, data.len);
@@ -193,7 +226,7 @@ pub const Table = struct {
                     }
                 }
             }
-            
+
             self.buffer_manager.unpin_frame(frame, false);
         }
 
@@ -203,37 +236,37 @@ pub const Table = struct {
     pub fn delete(self: *Table, txn_ctx: ?*TransactionContext, key: u64) !void {
         const rids = try self.btree.scan(self.allocator, key, key);
         defer self.allocator.free(rids);
-        
+
         for (rids) |rid| {
             const heap_page_id: u32 = @intCast(rid >> 32);
             const slot_id: u16 = @intCast(rid & 0xFFFF);
-            
+
             const frame = try self.buffer_manager.fetch_frame(heap_page_id);
             var view = SlottedView.init(&frame.page, false);
-            
+
             if (view.get_tuple(slot_id)) |full_data| {
                 if (full_data.len >= 8) {
                     const xmin = std.mem.readInt(u32, full_data[0..4][0..4], .little);
                     const xmax = std.mem.readInt(u32, full_data[4..8][0..4], .little);
-                    
+
                     var is_visible = true;
                     if (txn_ctx) |ctx| {
                         is_visible = ctx.is_visible(xmin, xmax);
                     } else {
                         is_visible = (xmax == 0);
                     }
-                    
+
                     if (is_visible) {
                         if (txn_ctx) |ctx| {
                             try ctx.lock_row_exclusive(self.btree.root_page_id, rid);
-                            
+
                             if (xmax != 0 and xmax != ctx.txn_id) {
                                 self.buffer_manager.unpin_frame(frame, false);
                                 return error.SerializationFailure;
                             }
-                            
+
                             try view.update_xmax(slot_id, ctx.txn_id);
-                            
+
                             if (self.buffer_manager.log_manager) |lm| {
                                 var logical_payload = try self.allocator.alloc(u8, 8);
                                 defer self.allocator.free(logical_payload);
@@ -278,7 +311,7 @@ pub const Table = struct {
         for (values) |v| {
             switch (v) {
                 .int => |i| {
-                    std.mem.writeInt(u64, buf[offset..offset+8][0..8], i, .little);
+                    std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], i, .little);
                     offset += 8;
                 },
                 .bool => |b| {
@@ -287,21 +320,21 @@ pub const Table = struct {
                 },
                 .null_val => return error.NullsNotSupported,
                 .varchar => |s| {
-                    std.mem.writeInt(u32, buf[offset..offset+4][0..4], @intCast(s.len), .little);
+                    std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(s.len), .little);
                     offset += 4;
                     std.mem.copyForwards(u8, buf[offset..], s);
                     offset += s.len;
                 },
                 .float => |f| {
-                    std.mem.writeInt(u64, buf[offset..offset+8][0..8], @bitCast(f), .little);
+                    std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], @bitCast(f), .little);
                     offset += 8;
                 },
                 .timestamp => |t| {
-                    std.mem.writeInt(u64, buf[offset..offset+8][0..8], @bitCast(t), .little);
+                    std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], @bitCast(t), .little);
                     offset += 8;
                 },
                 .json => |s| {
-                    std.mem.writeInt(u32, buf[offset..offset+4][0..4], @intCast(s.len), .little);
+                    std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(s.len), .little);
                     offset += 4;
                     std.mem.copyForwards(u8, buf[offset..], s);
                     offset += s.len;
@@ -311,7 +344,7 @@ pub const Table = struct {
                     offset += 16;
                 },
                 .signed_int => |i| {
-                    std.mem.writeInt(u64, buf[offset..offset+8][0..8], @bitCast(i), .little);
+                    std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], @bitCast(i), .little);
                     offset += 8;
                 },
             }
@@ -338,7 +371,7 @@ pub const Table = struct {
             }
             switch (col.data_type) {
                 .int => {
-                    values[i] = .{ .int = std.mem.readInt(u64, data[offset..offset+8][0..8], .little) };
+                    values[i] = .{ .int = std.mem.readInt(u64, data[offset .. offset + 8][0..8], .little) };
                     offset += 8;
                 },
                 .bool => {
@@ -346,37 +379,37 @@ pub const Table = struct {
                     offset += 1;
                 },
                 .varchar => {
-                    const len = std.mem.readInt(u32, data[offset..offset+4][0..4], .little);
+                    const len = std.mem.readInt(u32, data[offset .. offset + 4][0..4], .little);
                     offset += 4;
-                    const str = data[offset..offset+len];
+                    const str = data[offset .. offset + len];
                     offset += len;
                     values[i] = .{ .varchar = try allocator.dupe(u8, str) };
                 },
                 .float => {
-                    const bits = std.mem.readInt(u64, data[offset..offset+8][0..8], .little);
+                    const bits = std.mem.readInt(u64, data[offset .. offset + 8][0..8], .little);
                     values[i] = .{ .float = @bitCast(bits) };
                     offset += 8;
                 },
                 .timestamp => {
-                    const bits = std.mem.readInt(u64, data[offset..offset+8][0..8], .little);
+                    const bits = std.mem.readInt(u64, data[offset .. offset + 8][0..8], .little);
                     values[i] = .{ .timestamp = @bitCast(bits) };
                     offset += 8;
                 },
                 .json => {
-                    const len = std.mem.readInt(u32, data[offset..offset+4][0..4], .little);
+                    const len = std.mem.readInt(u32, data[offset .. offset + 4][0..4], .little);
                     offset += 4;
-                    const str = data[offset..offset+len];
+                    const str = data[offset .. offset + len];
                     offset += len;
                     values[i] = .{ .json = try allocator.dupe(u8, str) };
                 },
                 .uuid => {
                     var uuid: [16]u8 = undefined;
-                    std.mem.copyForwards(u8, &uuid, data[offset..offset+16]);
+                    std.mem.copyForwards(u8, &uuid, data[offset .. offset + 16]);
                     values[i] = .{ .uuid = uuid };
                     offset += 16;
                 },
                 .signed_int => {
-                    const bits = std.mem.readInt(u64, data[offset..offset+8][0..8], .little);
+                    const bits = std.mem.readInt(u64, data[offset .. offset + 8][0..8], .little);
                     values[i] = .{ .signed_int = @bitCast(bits) };
                     offset += 8;
                 },

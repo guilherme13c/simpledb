@@ -6,7 +6,8 @@ data/
 profiling/
 *.log
 scratch/
-test_*.zig
+/test_*.zig
 __pycache__/
 _*
 graphify-out/
+benchmark

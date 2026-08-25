@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
 
     // Per-module unit test suite (deterministic, no I/O dependencies)
     const unit_test_mod = b.createModule(.{
-        .root_source_file = b.path("unit_tests.zig"),
+        .root_source_file = b.path("src/unit_tests.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -58,8 +58,21 @@ pub fn build(b: *std.Build) void {
         .root_module = unit_test_mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
+
+    // Test runner for tests/unit/
+    const unit_runner_mod = b.createModule(.{
+        .root_source_file = b.path("unit_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const unit_runner = b.addTest(.{
+        .root_module = unit_runner_mod,
+    });
+    const run_unit_runner = b.addRunArtifact(unit_runner);
+
     const unit_test_step = b.step("test-unit", "Run per-module unit tests");
     unit_test_step.dependOn(&run_unit_tests.step);
+    unit_test_step.dependOn(&run_unit_runner.step);
 
     const valgrind_test = b.addSystemCommand(&[_][]const u8{
         "--leak-check=full",

@@ -1,6 +1,6 @@
 const std = @import("std");
-const TransactionContext = @import("../storage/wal/transaction.zig").TransactionContext;
-const ActiveSnapshot = @import("../storage/wal/transaction.zig").ActiveSnapshot;
+const TransactionContext = @import("../../src/storage/wal/transaction.zig").TransactionContext;
+const ActiveSnapshot = @import("../../src/storage/wal/transaction.zig").ActiveSnapshot;
 
 test "is_visible: system transaction (xmin=0) is always visible" {
     const ctx = TransactionContext{ .txn_id = 10 };

@@ -25,14 +25,18 @@ const Table = @import("storage/table.zig").Table;
 const Catalog = @import("storage/catalog.zig").Catalog;
 const LogManager = @import("storage/wal/log_manager.zig").LogManager;
 const RecoveryManager = @import("storage/wal/recovery_manager.zig").RecoveryManager;
-
+fn testPath(tmp: *const std.testing.TmpDir, comptime filename: []const u8, buf: []u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}/" ++ filename, .{tmp.sub_path});
+}
 test "BTree insertion and scan" {
     var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_btree.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_btree.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -85,8 +89,10 @@ test "Catalog and Table end-to-end" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_catalog.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_catalog.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -123,8 +129,10 @@ test "Schema Serialization and Deserialization" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_schema.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_schema.db", &path_buf);
 
     // Step 1: Create DB, initialize catalog, and create a table with a schema
     {
@@ -185,10 +193,12 @@ test "LogManager and RecoveryManager physical logging" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_wal = "data/test_recovery.wal";
-    const test_db = "data/test_recovery.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, test_wal) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var db_buf: [128]u8 = undefined;
+    var wal_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_recovery.db", &db_buf);
+    const test_wal = try testPath(&tmp, "test_recovery.wal", &wal_buf);
 
     // Step 1: Create a DB, write some logs, and crash
     {
@@ -251,8 +261,10 @@ test "Server execution logic" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_server_exec.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_server_exec.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -312,8 +324,10 @@ test "Volcano Executor: SeqScan, IndexScan, Filter" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_volcano.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_volcano.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -692,9 +706,10 @@ test "Extended Data Types and Advanced Aggregations" {
     var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded_io.deinit();
     const io = threaded_io.io();
-    const test_db = "data/test_extended.db";
-    std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_extended.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -780,8 +795,10 @@ test "BTree concurrent insertions" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_btree_concurrent.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_btree_concurrent.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -848,8 +865,10 @@ test "BTree extensive deletions and merges" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_btree_merge.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_btree_merge.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -908,9 +927,10 @@ test "Secondary Index" {
     defer threaded_io.deinit();
     const io = threaded_io.io();
 
-    const test_db = "data/test_secondary_index.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, "sys_tables") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_secondary_index.db", &path_buf);
 
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
@@ -1038,8 +1058,10 @@ test "BufferManager pin/unpin" {
     var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded_io.deinit();
     const io = threaded_io.io();
-    const test_db = "data/test_buf_pin.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_buf_pin.db", &path_buf);
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
     defer storage_mgr.deinit();
@@ -1054,8 +1076,10 @@ test "Table MVCC isolation: concurrent inserts visible only after commit" {
     var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded_io.deinit();
     const io = threaded_io.io();
-    const test_db = "data/test_table_mvcc.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_table_mvcc.db", &path_buf);
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
     defer storage_mgr.deinit();
@@ -1070,10 +1094,13 @@ test "RecoveryManager: analysis/red/undo passes with synthetic WAL" {
     var threaded_io = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded_io.deinit();
     const io = threaded_io.io();
-    const test_db = "data/test_recovery.db";
-    defer std.Io.Dir.cwd().deleteFile(io, test_db) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const test_db = try testPath(&tmp, "test_recovery.db", &path_buf);
     var storage_mgr = try sm.StorageManager.init(std.testing.allocator, io, test_db);
     try storage_mgr.start();
+    defer storage_mgr.deinit();
     var buffer_mgr = try bm.BufferManager.init(std.testing.allocator, &storage_mgr);
     try buffer_mgr.start();
     defer buffer_mgr.deinit();

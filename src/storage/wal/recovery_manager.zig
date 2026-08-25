@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const log_manager = @import("log_manager.zig");
 const LogRecordHeader = @import("log_record.zig").LogRecordHeader;
@@ -33,11 +34,11 @@ pub const RecoveryManager = struct {
     }
     
     pub fn recover(self: *RecoveryManager) !void {
-        std.debug.print("Starting ARIES Recovery...\n", .{});
+        if (!builtin.is_test) std.debug.print("Starting ARIES Recovery...\n", .{});
         try self.analysis_pass();
         try self.redo_pass();
         try self.undo_pass();
-        std.debug.print("ARIES Recovery Complete.\n", .{});
+        if (!builtin.is_test) std.debug.print("ARIES Recovery Complete.\n", .{});
     }
 
     fn analysis_pass(self: *RecoveryManager) !void {

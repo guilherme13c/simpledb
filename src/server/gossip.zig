@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const time = @import("../time.zig");
 const std = @import("std");
 

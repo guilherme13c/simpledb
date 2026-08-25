@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
 
     // Per-module unit test suite (deterministic, no I/O dependencies)
     const unit_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/unit_tests.zig"),
+        .root_source_file = b.path("unit_tests.zig"),
         .target = target,
         .optimize = optimize,
     });

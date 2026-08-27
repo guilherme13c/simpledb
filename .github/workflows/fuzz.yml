@@ -25,6 +25,8 @@ jobs:
           ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}"
           curl -fsSLO "$ZIG_URL"
           tar -xf "$ZIG_TARBALL"
+          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/" >> "$GITHUB_PATH"
+          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/lib" >> "$GITHUB_PATH"
           ./zig-linux-x86_64-${ZIG_VERSION}/zig version
 
       - name: Install AFL++

@@ -12,15 +12,22 @@ on:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.16.0
+      # Install Zig directly to avoid action incompatibility with newer runner Node versions
+      - name: Install Zig
+        run: |
+          ZIG_VERSION=0.16.0
+          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}"
+          curl -fsSLO "$ZIG_URL"
+          tar -xf "$ZIG_TARBALL"
+          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/" >> "$GITHUB_PATH"
+          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/lib" >> "$GITHUB_PATH"
+          zig version
 
       - name: Install AFL++
         run: |
@@ -43,7 +50,7 @@ jobs:
         run: |
           FUZZ_TIME=$([[ "${{ github.event_name }}" == "schedule" ]] && echo "600" || echo "60")
           echo "Running fuzzer for $FUZZ_TIME seconds..."
-          
+
           # We use -Q (QEMU mode) because we compiled the Zig binary normally without afl-clang instrumentation
           # AFL++ will dynamically instrument the binary at runtime
           afl-fuzz -Q -i fuzz_in -o fuzz_out -V $FUZZ_TIME -- ./zig-out/bin/fuzz
@@ -64,3 +71,6 @@ jobs:
         with:
           name: fuzzer-crashes
           path: fuzz_out/default/crashes/
+
+      - name: Cleanup
+        run: rm -rf fuzz_in fuzz_out

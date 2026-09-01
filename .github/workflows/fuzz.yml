@@ -33,10 +33,8 @@ jobs:
           echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}/lib" >> "$GITHUB_PATH"
           ./zig-x86_64-linux-${ZIG_VERSION}/zig version
 
-      - name: Install AFL++
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y afl++ qemu-user
+      - name: Pull AFL++ Docker image
+        run: docker pull aflplusplus/aflplusplus:latest
 
       - name: Build Fuzz Target
         run: zig build -p ./zig-out
@@ -57,7 +55,14 @@ jobs:
 
           # We use -Q (QEMU mode) because we compiled the Zig binary normally without afl-clang instrumentation
           # AFL++ will dynamically instrument the binary at runtime
-          afl-fuzz -Q -i fuzz_in -o fuzz_out -V $FUZZ_TIME -- ./zig-out/bin/fuzz
+          docker run --rm -v $PWD:/work -w /work \
+            -e AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
+            -e AFL_SKIP_CPUFAST=1 \
+            aflplusplus/aflplusplus:latest \
+            afl-fuzz -Q -i fuzz_in -o fuzz_out -V $FUZZ_TIME -- ./zig-out/bin/fuzz
+          
+          # Fix permissions of root-created output directory for later steps
+          sudo chown -R $USER:$USER fuzz_out
 
       - name: Check for Crashes
         run: |

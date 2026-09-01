@@ -3,10 +3,16 @@ const Lexer = @import("query/lexer.zig").Lexer;
 const Parser = @import("query/parser.zig").Parser;
 
 pub fn main() !void {
+    std.debug.print("Entering main...\n", .{});
     const allocator = std.heap.page_allocator;
 
-    var input_buf: [64 * 1024]u8 = undefined;
-    const bytes_read = try std.posix.read(0, &input_buf);
+    const input_buf = try allocator.alloc(u8, 64 * 1024);
+    defer allocator.free(input_buf);
+
+    const bytes_read = std.posix.read(0, input_buf) catch |err| {
+        std.debug.print("Read error: {}\n", .{err});
+        return;
+    };
     const input = input_buf[0..bytes_read];
 
     // Fuzz the Lexer
@@ -31,4 +37,6 @@ pub fn main() !void {
         },
         else => {},
     }
+
+    std.debug.print("Successfully parsed.\n", .{});
 }

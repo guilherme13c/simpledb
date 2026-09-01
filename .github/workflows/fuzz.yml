@@ -37,7 +37,7 @@ jobs:
         run: docker pull aflplusplus/aflplusplus:latest
 
       - name: Build Fuzz Target
-        run: zig build -p ./zig-out -Dtarget=x86_64-linux-gnu.2.31
+        run: zig build -p ./zig-out -Dtarget=x86_64-linux-gnu.2.31 -Doptimize=ReleaseSafe
 
       - name: Prepare Seed Corpus
         run: |

@@ -21,13 +21,13 @@ jobs:
       - name: Install Zig
         run: |
           ZIG_VERSION=0.16.0
-          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          ZIG_TARBALL="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}"
           curl -fsSLO "$ZIG_URL"
           tar -xf "$ZIG_TARBALL"
-          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/" >> "$GITHUB_PATH"
-          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}/lib" >> "$GITHUB_PATH"
-          ./zig-linux-x86_64-${ZIG_VERSION}/zig version
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}/" >> "$GITHUB_PATH"
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}/lib" >> "$GITHUB_PATH"
+          ./zig-x86_64-linux-${ZIG_VERSION}/zig version
 
       - name: Install AFL++
         run: |

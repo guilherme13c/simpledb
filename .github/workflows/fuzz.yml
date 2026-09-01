@@ -12,7 +12,11 @@ on:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-
+    env:
+      # GitHub Actions pipes core_pattern to systemd-coredump, which breaks
+      # AFL's waitpid() crash detection. QEMU mode (-Q) still catches crashes
+      # via runtime instrumentation; this flag just disables the core_pattern check.
+      AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: 1
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -1,43 +1,20 @@
-# Request Execution Pipeline
+# Request execution
 
-`src/server/execution.zig` drives statement execution from a parsed AST (`ast.Statement`). Entry points:
+Source: `src/server/execution.zig`.
 
-- `execute_statement` (line 70) → `execute_statement_internal` (line 81) which also handles subqueries, CTEs (`with`), `explain`, temp tables.
-- `resolve_subqueries` (line 39) rewrites `compare_subquery` nodes into literal `compare` by running the subquery via `execute_statement_internal` (line 56) and taking `out_tuple[0]`.
+`execute_statement` dispatches parsed AST nodes to catalog/table operations or
+builds a stack-allocated executor tree. It supports DDL, DML, transactions,
+`EXPLAIN`, and `WITH` temporary tables. INSERT serializes values, treats column
+zero as an unsigned primary key, writes through `Table.insert`, and records a
+`delete_key` undo entry. DELETE scans matching rows and records enough bytes to
+reinsert them; UPDATE is delete-plus-insert and is not added to that undo stack.
 
-Per-statement dispatch (lines 105-557):
+For a `WHERE` expression that is an extractable primary/secondary index
+condition, the planner chooses an index scan whenever the hard-coded cost 4 is
+not greater than tuple count; otherwise it uses a sequential scan plus filter.
+For an inner equijoin it compares simple cardinality formulas and generally
+chooses hash join; nonmatching forms use nested loops. It has no statistics,
+selectivity, plan cache, join reordering, predicate pushdown, or disk-spilling.
 
-| Statement | Action |
-|-----------|--------|
-| `.with` | create temp tables for each CTE, recurse into CTE body, then main statement, drop temp tables (lines 107-117) |
-| `.create_table` / `.alter_table` / `.create_index` / `.drop_table` | catalog calls (lines 119-130) |
-| `.insert` | `InsertExecutor` (lines 131-151); records undo `.delete_key` for rollback (lines 143-148) |
-| `.delete` | builds scan (index or seq + filter) → `DeleteExecutor` (lines 153-204) |
-| `.update` | builds scan → `UpdateExecutor` |
-| `.select` | builds scan/filter/project/join/aggregate/order_by/limit/window → streams rows to `writer` |
-
-```mermaid
-flowchart TD
-    A[execute_statement] --> B{stmt type}
-    B -->|with| C[create temp tables]
-    C --> D[exec CTEs]
-    D --> E[exec main]
-    E --> F[drop temp tables]
-    B -->|insert| G[InsertExecutor]
-    G --> H[record undo]
-    B -->|delete/update| I[build scan plan]
-    I --> J[index? Seq+Filter]
-    J --> K[Delete/UpdateExecutor]
-    B -->|select| L[build pipeline]
-    L --> M[Seq/Index Scan]
-    M --> N[Filter]
-    N --> O[Project]
-    O --> P[Join]
-    P --> Q[Aggregate]
-    Q --> R[Window]
-    R --> S[OrderBy]
-    S --> T[Limit]
-    T --> U[write rows]
-```
-
-Error responses are written via the `writer` passed from `handleConnection` (e.g. `ERR TABLE_NOT_FOUND`). `out_tuple` (line 88) captures single-row results for subquery resolution. `target_temp_table` (line 89) routes output into a temp table for CTEs.
+Executor tuples and strings are allocator-owned. The dispatcher opens the final
+operator, pulls until `null`, formats pipe-separated values, and closes it.
